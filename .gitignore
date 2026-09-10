@@ -5,6 +5,3 @@
 .vscode/ipch
 .vscode/extensions.json
 .DS_Store
-
-# Реальные Wi-Fi credentials — держи только локально, в репозиторий идёт wifi_credentials.h.example
-src/wifi_credentials.h

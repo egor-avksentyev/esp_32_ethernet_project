@@ -32,9 +32,21 @@
 #define ARYLIC_IP_OCTETS 192, 168, 1, 139
 #define ARYLIC_POLL_INTERVAL_MS 3000
 
-// --- Wi-Fi реконнект (wifi_setup.h/.cpp) — переподключение с нарастающей паузой:
-// после разрыва связи первая попытка через WIFI_RECONNECT_BASE_MS, дальше пауза удваивается
+// --- Wi-Fi: подключение сохранённой сетью + реконнект (wifi_setup.h/.cpp) ---
+// SSID/пароль хранятся в NVS (Preferences), не в коде — см. wifiSaveCredentials()/
+// wifiForgetCredentials() и wifi_provisioning.h за тем, как они туда попадают.
+//
+// Сколько ждём подключения СОХРАНЁННОЙ сетью при старте, прежде чем считать её недоступной
+// и перейти в режим настройки (wifi_provisioning.h) — типичный случай: устройство физически
+// перенесли в другой дом/сеть, старая сеть больше не видна
+#define WIFI_CONNECT_TIMEOUT_MS 15000UL
+// После разрыва связи с УЖЕ подключённой сетью (не при первом старте) — переподключение с
+// нарастающей паузой: первая попытка через WIFI_RECONNECT_BASE_MS, дальше пауза удваивается
 // на каждой неудачной попытке вплоть до WIFI_RECONNECT_MAX_MS, и сбрасывается обратно к
-// базовой сразу после успешного подключения (см. onWifiEvent() в wifi_setup.cpp) ---
+// базовой сразу после успешного подключения (см. onWifiEvent() в wifi_setup.cpp)
 #define WIFI_RECONNECT_BASE_MS 2000UL
 #define WIFI_RECONNECT_MAX_MS 30000UL
+
+// --- Режим настройки Wi-Fi (wifi_provisioning.h/.cpp) — своя открытая точка доступа,
+// поднимается, когда сохранённой сети нет или она недоступна за WIFI_CONNECT_TIMEOUT_MS ---
+#define WIFI_PROVISION_AP_SSID "AudioCtrl-Setup"

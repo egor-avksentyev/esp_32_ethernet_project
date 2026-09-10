@@ -48,6 +48,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<div><button onclick=cmd('mute')>Mute</button>"
   "<button onclick=cmd('set')>Source</button>"
   "<button onclick=cmd('power')>Power</button></div>"
+  "<div><button onclick=forgetWifi() style='background:#733'>Сменить Wi-Fi</button></div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
   "let holdTimer=null;"
@@ -56,6 +57,9 @@ static const char PAGE_HTML[] PROGMEM =
   "function poll(){fetch('/status').then(r=>r.text()).then(t=>{"
   "document.getElementById('status').innerText=t})}"
   "setInterval(poll,1500);poll();"
+  "function forgetWifi(){if(confirm('Забыть текущую Wi-Fi сеть и перезагрузиться в режим "
+  "настройки?')){fetch('/wifi-forget',{method:'POST'})"
+  ".then(()=>alert('Готово. Устройство подняло точку доступа " WIFI_PROVISION_AP_SSID "'))}}"
   "</script></body></html>";
 
 static void handleRoot() {
@@ -89,10 +93,22 @@ static void handleNotFound() {
   handleRoot();
 }
 
+// Сознательная смена сети без физического переезда (см. wifi_provisioning.h за тем, зачем
+// это нужно отдельно от автоматического ухода в настройку) — стирает сохранённые SSID/пароль
+// и перезагружается; следующий wifiSetupBegin() (main.cpp) не найдёт сохранённой сети и сам
+// поднимет AP-режим настройки
+static void handleWifiForget() {
+  wifiForgetCredentials();
+  server.send(200, "text/plain", "OK, перезагружаюсь в режим настройки");
+  delay(1000); // даём TCP-ответу уйти клиенту, прежде чем рвать сеть перезагрузкой
+  ESP.restart();
+}
+
 void webControlBegin() {
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
   server.on("/status", handleStatus);
+  server.on("/wifi-forget", HTTP_POST, handleWifiForget);
   server.onNotFound(handleNotFound);
   server.begin();
 }

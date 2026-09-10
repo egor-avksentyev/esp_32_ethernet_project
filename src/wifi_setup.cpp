@@ -1,7 +1,7 @@
 #include "wifi_setup.h"
 #include "config.h"
-#include "wifi_credentials.h"
 #include <WiFi.h>
+#include <Preferences.h>
 
 static volatile bool connected = false;
 static unsigned long currentBackoffMs = WIFI_RECONNECT_BASE_MS;
@@ -20,8 +20,6 @@ static void onWifiEvent(WiFiEvent_t event) {
         Serial.println("[wifi] связь потеряна — переподключение с нарастающей паузой");
       }
       connected = false;
-      // Следующая попытка не сразу — WiFi.reconnect() дёргаем из wifiSetupMaintain() не
-      // раньше, чем истечёт currentBackoffMs с этого момента (см. там же)
       nextReconnectAttempt = millis() + currentBackoffMs;
       break;
     default:
@@ -29,13 +27,38 @@ static void onWifiEvent(WiFiEvent_t event) {
   }
 }
 
-void wifiSetupBegin() {
+bool wifiSetupBegin() {
+  Preferences prefs;
+  prefs.begin("wifi", true); // read-only
+  String ssid = prefs.getString("ssid", "");
+  String password = prefs.getString("pass", "");
+  prefs.end();
+
+  if (ssid.length() == 0) {
+    Serial.println("[wifi] сохранённой сети нет — нужна настройка (см. wifi_provisioning.h)");
+    return false;
+  }
+
   WiFi.onEvent(onWifiEvent);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(ssid.c_str(), password.c_str());
   Serial.print("[wifi] connecting to ");
-  Serial.println(WIFI_SSID);
-  nextReconnectAttempt = millis() + currentBackoffMs;
+  Serial.println(ssid);
+
+  // Одноразовое ожидание в setup() (не в loop()) — тот же принцип, что уже применялся в
+  // Mega-проекте для Ethernet.begin()/DHCP: разовая стоимость при старте, приемлемо
+  unsigned long start = millis();
+  while (millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+    if (WiFi.status() == WL_CONNECTED) {
+      connected = true;
+      nextReconnectAttempt = millis() + currentBackoffMs;
+      return true;
+    }
+    delay(100);
+  }
+
+  Serial.println("[wifi] сохранённая сеть не отвечает — вероятно устройство в новом месте");
+  return false;
 }
 
 void wifiSetupMaintain() {
@@ -59,4 +82,19 @@ void wifiSetupMaintain() {
 
 bool wifiIsConnected() {
   return connected;
+}
+
+void wifiSaveCredentials(const char* ssid, const char* password) {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", password);
+  prefs.end();
+}
+
+void wifiForgetCredentials() {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  prefs.clear();
+  prefs.end();
 }
