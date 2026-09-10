@@ -5,11 +5,45 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
+
+// Резолвит ARYLIC_MDNS_HOSTNAME через mDNS (см. config.h — имя найдено live через
+// `dns-sd -B _linkplay._tcp local.`, привязано к устройству через его MAC, не к текущему
+// IP). Кэшируется, пока запросы к Arylic проходят успешно — перерезолвливается заново
+// только если pollArylicMetadata() получит отказ (см. ниже invalidateArylicIp()), а не
+// на каждый опрос: сам mDNS-запрос — блокирующий (см. MDNS.queryHost()), незачем платить
+// эту цену каждые ARYLIC_POLL_INTERVAL_MS, когда IP скорее всего не менялся
+static IPAddress arylicIp;
+static bool arylicIpKnown = false;
+
+static void invalidateArylicIp() {
+  arylicIpKnown = false;
+}
+
+static IPAddress resolveArylicIp() {
+  if (arylicIpKnown) {
+    return arylicIp;
+  }
+  IPAddress resolved = MDNS.queryHost(ARYLIC_MDNS_HOSTNAME, 2000);
+  if (resolved != IPAddress((uint32_t)0)) {
+    arylicIp = resolved;
+    arylicIpKnown = true;
+    Serial.print("[arylic] mDNS: ");
+    Serial.print(ARYLIC_MDNS_HOSTNAME);
+    Serial.print(".local -> ");
+    Serial.println(arylicIp);
+  } else {
+    arylicIp = IPAddress(ARYLIC_IP_OCTETS);
+    arylicIpKnown = true; // не долбим mDNS каждый опрос и на фолбэке — тоже до следующего сбоя
+    Serial.print("[arylic] mDNS-резолв не удался, использую статический IP из config.h: ");
+    Serial.println(arylicIp);
+  }
+  return arylicIp;
+}
 
 static String arylicUrl() {
-  IPAddress ip(ARYLIC_IP_OCTETS);
   String url = "https://";
-  url += ip.toString();
+  url += resolveArylicIp().toString();
   url += "/httpapi.asp?command=getPlayerStatus";
   return url;
 }
@@ -78,6 +112,8 @@ void pollArylicMetadata() {
     Serial.print("[arylic] запрос не удался, код: ");
     Serial.println(httpCode);
     http.end();
+    // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново
+    invalidateArylicIp();
     return;
   }
 
