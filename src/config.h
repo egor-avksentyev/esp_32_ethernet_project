@@ -26,5 +26,9 @@
 #define ARYLIC_IP_OCTETS 192, 168, 1, 139
 #define ARYLIC_POLL_INTERVAL_MS 3000
 
-// --- Wi-Fi реконнект ---
-#define WIFI_RECONNECT_CHECK_MS 5000
+// --- Wi-Fi реконнект (wifi_setup.h/.cpp) — переподключение с нарастающей паузой:
+// после разрыва связи первая попытка через WIFI_RECONNECT_BASE_MS, дальше пауза удваивается
+// на каждой неудачной попытке вплоть до WIFI_RECONNECT_MAX_MS, и сбрасывается обратно к
+// базовой сразу после успешного подключения (см. onWifiEvent() в wifi_setup.cpp) ---
+#define WIFI_RECONNECT_BASE_MS 2000UL
+#define WIFI_RECONNECT_MAX_MS 30000UL
