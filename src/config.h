@@ -15,6 +15,7 @@
 #define MEGA_LINK_TX_PIN 17
 #define MEGA_LINK_RX_PIN 16 // не используется (Mega ничего не шлёт назад), но begin() требует пин
 #define MEGA_LINK_BAUD 115200
+#define MEGA_LINK_META_MAX_LEN 40 // Максимум символов в строке "META:" — под однострочный показ на OLED
 
 // --- Веб-страница управления (web_control.h/.cpp) ---
 #define WEB_SERVER_PORT 80

@@ -3,8 +3,6 @@
 
 static HardwareSerial MegaSerial(2);
 
-#define MEGA_LINK_META_MAX_LEN 40
-
 void megaLinkBegin() {
   MegaSerial.begin(MEGA_LINK_BAUD, SERIAL_8N1, MEGA_LINK_RX_PIN, MEGA_LINK_TX_PIN);
 }
