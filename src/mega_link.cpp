@@ -28,3 +28,15 @@ void megaLinkSendIp(const IPAddress& ip) {
   MegaSerial.print(ip);
   MegaSerial.print('\n');
 }
+
+void megaLinkSendPlayState(bool playing) {
+  MegaSerial.print("PLAY:");
+  MegaSerial.print(playing ? '1' : '0');
+  MegaSerial.print('\n');
+}
+
+void megaLinkSendArylicStatus(bool ok) {
+  MegaSerial.print("ARYLIC:");
+  MegaSerial.print(ok ? "OK" : "FAIL");
+  MegaSerial.print('\n');
+}

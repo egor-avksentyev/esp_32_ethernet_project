@@ -112,17 +112,25 @@ void pollArylicMetadata() {
     Serial.print("[arylic] запрос не удался, код: ");
     Serial.println(httpCode);
     http.end();
+    megaLinkSendArylicStatus(false);
+    // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
+    // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
+    // навсегда, если Arylic пропал из сети посреди воспроизведения)
+    megaLinkSendPlayState(false);
     // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново
     invalidateArylicIp();
     return;
   }
+  megaLinkSendArylicStatus(true);
 
   String payload = http.getString();
   http.end();
 
-  if (payload.indexOf("\"status\":\"play\"") < 0) {
-    // Не играет (pause/stop/idle) — метадату не шлём. Что показывать на Mega в этом случае —
-    // открытый вопрос, см. README.md, решается на стороне Mega-приёмника, не здесь
+  bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
+  megaLinkSendPlayState(playing);
+  if (!playing) {
+    // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
+    // что нужно для выхода из Now Playing/возврата предыдущего Source
     return;
   }
 
