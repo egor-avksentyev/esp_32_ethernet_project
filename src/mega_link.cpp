@@ -22,3 +22,9 @@ void megaLinkSendMetadata(const char* text) {
   MegaSerial.write((const uint8_t*)text, len);
   MegaSerial.print('\n');
 }
+
+void megaLinkSendIp(const IPAddress& ip) {
+  MegaSerial.print("IP:");
+  MegaSerial.print(ip);
+  MegaSerial.print('\n');
+}

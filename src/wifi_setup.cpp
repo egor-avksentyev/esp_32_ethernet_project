@@ -1,11 +1,13 @@
 #include "wifi_setup.h"
 #include "config.h"
+#include "mega_link.h"
 #include <WiFi.h>
 #include <Preferences.h>
 
 static volatile bool connected = false;
 static unsigned long currentBackoffMs = WIFI_RECONNECT_BASE_MS;
 static unsigned long nextReconnectAttempt = 0;
+static unsigned long lastIpSend = 0;
 
 static void onWifiEvent(WiFiEvent_t event) {
   switch (event) {
@@ -14,6 +16,8 @@ static void onWifiEvent(WiFiEvent_t event) {
       currentBackoffMs = WIFI_RECONNECT_BASE_MS; // сброс паузы после успешного подключения
       Serial.print("[wifi] подключено, IP: ");
       Serial.println(WiFi.localIP());
+      megaLinkSendIp(WiFi.localIP());
+      lastIpSend = millis();
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       if (connected) {
@@ -63,6 +67,12 @@ bool wifiSetupBegin() {
 
 void wifiSetupMaintain() {
   if (connected) {
+    // Периодически повторяем IP на Mega — не только в момент подключения (см. config.h,
+    // WIFI_IP_RESEND_INTERVAL_MS, за тем зачем: Mega могла пропустить самое первое сообщение)
+    if (millis() - lastIpSend >= WIFI_IP_RESEND_INTERVAL_MS) {
+      lastIpSend = millis();
+      megaLinkSendIp(WiFi.localIP());
+    }
     return;
   }
   // Безопасно к переполнению millis() (знаковая разность) — актуально, раз устройство может

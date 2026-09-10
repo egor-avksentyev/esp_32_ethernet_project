@@ -13,6 +13,7 @@
 // ============================================================================
 
 #include <Arduino.h>
+#include <IPAddress.h>
 
 void megaLinkBegin();
 
@@ -24,3 +25,10 @@ void megaLinkSendCommand(char actionLetter);
 // Отправляет "META:<text>\n" — text без переводов строк, обрезается до разумной длины
 // под однострочный показ на OLED (см. MEGA_LINK_META_MAX_LEN в mega_link.cpp)
 void megaLinkSendMetadata(const char* text);
+
+// Отправляет "IP:<a.b.c.d>\n" — текущий IP ESP32 в РЕАЛЬНОЙ сети (не 192.168.4.1 из режима
+// настройки, см. wifi_provisioning.h — эта функция не вызывается, пока идёт провижининг).
+// Вызывается из wifi_setup.cpp при получении IP и затем периодически (см. config.h) — так
+// Mega (когда появится приёмник, см. README.md) сможет показать актуальный адрес на своём
+// экране, не заставляя лезть в Serial-монитор или полагаться на mDNS с телефона
+void megaLinkSendIp(const IPAddress& ip);
