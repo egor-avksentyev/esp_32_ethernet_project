@@ -2,6 +2,7 @@
 #include "config.h"
 #include "mega_link.h"
 #include "wifi_setup.h"
+#include "arylic_metadata.h"
 #include <WebServer.h>
 
 static WebServer server(WEB_SERVER_PORT);
@@ -48,6 +49,9 @@ static const char PAGE_HTML[] PROGMEM =
   "<div><button onclick=cmd('mute')>Mute</button>"
   "<button onclick=cmd('set')>Source</button>"
   "<button onclick=cmd('power')>Power</button></div>"
+  "<div style='margin-top:14px'>"
+  "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
+  "<button id=arylicApply onclick=applyArylicIp()>Применить</button></div>"
   "<div><button onclick=forgetWifi() style='background:#733'>Сменить Wi-Fi</button></div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
@@ -57,6 +61,19 @@ static const char PAGE_HTML[] PROGMEM =
   "function poll(){fetch('/status').then(r=>r.text()).then(t=>{"
   "document.getElementById('status').innerText=t})}"
   "setInterval(poll,1500);poll();"
+  "function applyArylicIp(){"
+  "let v=document.getElementById('arylicIp').value;"
+  "fetch('/arylic-ip?ip='+encodeURIComponent(v),{method:'POST'})"
+  ".then(r=>{if(!r.ok)alert('Некорректный IP')})}"
+  // Пока Arylic реально виден (см. arylicIsReachable() в arylic_metadata.cpp) — поле и кнопка
+  // неактивны, ручной ввод не нужен; текущий определённый адрес подставляется в поле для
+  // наглядности. Как только связь пропадает — поле включается само, без перезагрузки страницы
+  "function pollArylic(){fetch('/arylic-status').then(r=>r.text()).then(t=>{"
+  "let parts=t.split(' ');let ok=(parts[0]=='OK');let ip=parts[1]||'';"
+  "let el=document.getElementById('arylicIp');"
+  "el.disabled=ok;document.getElementById('arylicApply').disabled=ok;"
+  "if(ok&&ip)el.value=ip})}"
+  "setInterval(pollArylic,3000);pollArylic();"
   "function forgetWifi(){if(confirm('Забыть текущую Wi-Fi сеть и перезагрузиться в режим "
   "настройки?')){fetch('/wifi-forget',{method:'POST'})"
   ".then(()=>alert('Готово. Устройство подняло точку доступа " WIFI_PROVISION_AP_SSID "'))}}"
@@ -93,6 +110,32 @@ static void handleNotFound() {
   handleRoot();
 }
 
+// "OK <ip>" или "FAIL <ip>" (<ip> может быть пустым, если ещё ни разу не определился) —
+// используется JS на странице, чтобы включать/выключать поле ручного ввода и подставлять
+// туда текущий адрес (см. PAGE_HTML, pollArylic())
+static void handleArylicStatus() {
+  String resp = arylicIsReachable() ? "OK " : "FAIL ";
+  resp += arylicCurrentIp();
+  server.send(200, "text/plain", resp);
+}
+
+// Ручной ввод IP Arylic с веб-страницы — пустая строка снимает override (см.
+// setArylicIpOverride() в arylic_metadata.cpp за подробностями приоритета над mDNS)
+static void handleArylicIp() {
+  if (!server.hasArg("ip")) {
+    server.send(400, "text/plain", "no ip");
+    return;
+  }
+  String ip = server.arg("ip");
+  IPAddress parsed;
+  if (ip.length() > 0 && !parsed.fromString(ip)) {
+    server.send(400, "text/plain", "invalid IP");
+    return;
+  }
+  setArylicIpOverride(ip.c_str());
+  server.send(200, "text/plain", "OK");
+}
+
 // Сознательная смена сети без физического переезда (см. wifi_provisioning.h за тем, зачем
 // это нужно отдельно от автоматического ухода в настройку) — стирает сохранённые SSID/пароль
 // и перезагружается; следующий wifiSetupBegin() (main.cpp) не найдёт сохранённой сети и сам
@@ -109,6 +152,8 @@ void webControlBegin() {
   server.on("/cmd", handleCmd);
   server.on("/status", handleStatus);
   server.on("/wifi-forget", HTTP_POST, handleWifiForget);
+  server.on("/arylic-status", handleArylicStatus);
+  server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.onNotFound(handleNotFound);
   server.begin();
 }

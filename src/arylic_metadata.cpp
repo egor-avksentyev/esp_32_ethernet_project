@@ -15,12 +15,54 @@
 // эту цену каждые ARYLIC_POLL_INTERVAL_MS, когда IP скорее всего не менялся
 static IPAddress arylicIp;
 static bool arylicIpKnown = false;
+static bool reachable = false;
+
+// Ручной ввод с веб-страницы (setArylicIpOverride()) — пока задан, имеет приоритет над
+// mDNS/статическим фолбэком целиком, resolveArylicIp() до них даже не доходит
+static IPAddress manualIp;
+static bool manualIpSet = false;
 
 static void invalidateArylicIp() {
   arylicIpKnown = false;
 }
 
+bool arylicIsReachable() {
+  return reachable;
+}
+
+String arylicCurrentIp() {
+  if (manualIpSet) {
+    return manualIp.toString();
+  }
+  if (arylicIpKnown) {
+    return arylicIp.toString();
+  }
+  return "";
+}
+
+void setArylicIpOverride(const char* ip) {
+  if (ip[0] == '\0') {
+    manualIpSet = false;
+    invalidateArylicIp(); // на следующем опросе снова резолвим через mDNS с чистого листа
+    Serial.println("[arylic] ручной IP снят, возвращаюсь к mDNS");
+    return;
+  }
+  IPAddress parsed;
+  if (!parsed.fromString(ip)) {
+    Serial.print("[arylic] некорректный IP с веб-страницы: ");
+    Serial.println(ip);
+    return;
+  }
+  manualIp = parsed;
+  manualIpSet = true;
+  Serial.print("[arylic] IP задан вручную: ");
+  Serial.println(manualIp);
+}
+
 static IPAddress resolveArylicIp() {
+  if (manualIpSet) {
+    return manualIp;
+  }
   if (arylicIpKnown) {
     return arylicIp;
   }
@@ -112,15 +154,18 @@ void pollArylicMetadata() {
     Serial.print("[arylic] запрос не удался, код: ");
     Serial.println(httpCode);
     http.end();
+    reachable = false;
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
     // навсегда, если Arylic пропал из сети посреди воспроизведения)
     megaLinkSendPlayState(false);
-    // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново
+    // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново.
+    // Ручной override (manualIpSet) это не затрагивает — см. resolveArylicIp()
     invalidateArylicIp();
     return;
   }
+  reachable = true;
   megaLinkSendArylicStatus(true);
 
   String payload = http.getString();
