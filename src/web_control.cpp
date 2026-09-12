@@ -49,6 +49,12 @@ static const char PAGE_HTML[] PROGMEM =
   "<div><button onclick=cmd('mute')>Mute</button>"
   "<button onclick=cmd('set')>Source</button>"
   "<button onclick=cmd('power')>Power</button></div>"
+  "<div id=trackWrap style='margin-top:14px;display:none'>"
+  "<div id=trackTitle style='font-size:.95em;color:#ccc;margin-bottom:4px'></div>"
+  "<div style='background:#333;border-radius:6px;height:8px;overflow:hidden'>"
+  "<div id=trackBar style='background:#8cf;height:100%;width:0%'></div></div>"
+  "<div style='font-size:.8em;color:#888;margin-top:2px'>"
+  "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div></div>"
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp()>Применить</button></div>"
@@ -74,6 +80,22 @@ static const char PAGE_HTML[] PROGMEM =
   "el.disabled=ok;document.getElementById('arylicApply').disabled=ok;"
   "if(ok&&ip)el.value=ip})}"
   "setInterval(pollArylic,3000);pollArylic();"
+  // Прогресс трека: /track опрашивается раз в 3с (как всё остальное), а между опросами
+  // позиция досчитывается локально по реальному прошедшему времени (Date.now()), чтобы
+  // полоска ехала плавно, а не прыгала раз в 3с — см. arylic_metadata.h за объяснением age
+  "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false;"
+  "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
+  "return m+':'+(s<10?'0':'')+s}"
+  "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
+  "trackPlayingNow=j.playing;trackLen=j.len;trackPos=j.pos+j.age;trackFetchTime=Date.now();"
+  "document.getElementById('trackWrap').style.display=j.playing?'block':'none';"
+  "if(j.playing)document.getElementById('trackTitle').innerText=j.text})}"
+  "function tickTrack(){if(!trackPlayingNow)return;"
+  "let pos=trackPos+(Date.now()-trackFetchTime);if(trackLen>0&&pos>trackLen)pos=trackLen;"
+  "document.getElementById('trackCur').innerText=fmtTime(pos);"
+  "document.getElementById('trackLen').innerText=fmtTime(trackLen);"
+  "document.getElementById('trackBar').style.width=(trackLen>0?(100*pos/trackLen):0)+'%'}"
+  "setInterval(pollTrack,3000);pollTrack();setInterval(tickTrack,500);"
   "function forgetWifi(){if(confirm('Забыть текущую Wi-Fi сеть и перезагрузиться в режим "
   "настройки?')){fetch('/wifi-forget',{method:'POST'})"
   ".then(()=>alert('Готово. Устройство подняло точку доступа " WIFI_PROVISION_AP_SSID "'))}}"
@@ -136,6 +158,33 @@ static void handleArylicIp() {
   server.send(200, "text/plain", "OK");
 }
 
+// Прогресс трека для JS-полоски на странице (см. arylic_metadata.h, pollTrack() в PAGE_HTML) —
+// pos/age в мс, JS сам считает pos+age как позицию на момент этого ответа и дальше тикает
+// локально до следующего опроса
+static void handleTrack() {
+  String text = arylicTrackText();
+  String escaped;
+  escaped.reserve(text.length());
+  for (unsigned int i = 0; i < text.length(); i++) {
+    char c = text[i];
+    if (c == '"' || c == '\\') escaped += '\\';
+    escaped += c;
+  }
+
+  String resp = "{\"playing\":";
+  resp += arylicTrackIsPlaying() ? "true" : "false";
+  resp += ",\"text\":\"";
+  resp += escaped;
+  resp += "\",\"pos\":";
+  resp += String(arylicTrackPosMs());
+  resp += ",\"len\":";
+  resp += String(arylicTrackLenMs());
+  resp += ",\"age\":";
+  resp += String(arylicTrackAgeMs());
+  resp += "}";
+  server.send(200, "application/json", resp);
+}
+
 // Сознательная смена сети без физического переезда (см. wifi_provisioning.h за тем, зачем
 // это нужно отдельно от автоматического ухода в настройку) — стирает сохранённые SSID/пароль
 // и перезагружается; следующий wifiSetupBegin() (main.cpp) не найдёт сохранённой сети и сам
@@ -154,6 +203,7 @@ void webControlBegin() {
   server.on("/wifi-forget", HTTP_POST, handleWifiForget);
   server.on("/arylic-status", handleArylicStatus);
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
+  server.on("/track", handleTrack);
   server.onNotFound(handleNotFound);
   server.begin();
 }

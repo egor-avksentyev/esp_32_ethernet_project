@@ -22,6 +22,20 @@ static bool reachable = false;
 static IPAddress manualIp;
 static bool manualIpSet = false;
 
+// Прогресс трека для веб-страницы (см. arylic_metadata.h) — отдельная копия от того, что
+// уходит на Mega (там своя, короче, MEGA_LINK_META_MAX_LEN)
+static char trackText[64] = "";
+static long trackPosMs = 0;
+static long trackLenMs = 0;
+static unsigned long trackCaptureMillis = 0;
+static bool trackPlaying = false;
+
+bool arylicTrackIsPlaying() { return trackPlaying; }
+String arylicTrackText() { return String(trackText); }
+long arylicTrackPosMs() { return trackPosMs; }
+long arylicTrackLenMs() { return trackLenMs; }
+unsigned long arylicTrackAgeMs() { return millis() - trackCaptureMillis; }
+
 static void invalidateArylicIp() {
   arylicIpKnown = false;
 }
@@ -112,6 +126,17 @@ static void decodeHexField(const char* hex, char* out, size_t outMax) {
   out[o] = '\0';
 }
 
+// "curpos"/"totlen" у Arylic — простые строки-числа (не hex, в отличие от Title/Artist),
+// поэтому проще: найти ключ и разобрать atol() — она сама останавливается на первом
+// нечисловом символе (закрывающая кавычка), явно искать конец строки не нужно
+static long extractLongField(const String& payload, const char* key) {
+  int idx = payload.indexOf(key);
+  if (idx < 0) {
+    return 0;
+  }
+  return atol(payload.c_str() + idx + strlen(key));
+}
+
 // Простой strstr по плоскому JSON — ответ Arylic одноуровневый (см. arylic_metadata.h),
 // полноценный JSON-парсер тут не нужен и не стоит своего RAM
 static void extractHexField(const String& payload, const char* key, char* out, size_t outMax) {
@@ -155,6 +180,7 @@ void pollArylicMetadata() {
     Serial.println(httpCode);
     http.end();
     reachable = false;
+    trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
@@ -173,11 +199,19 @@ void pollArylicMetadata() {
 
   bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
   megaLinkSendPlayState(playing);
+  trackPlaying = playing;
   if (!playing) {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
     // что нужно для выхода из Now Playing/возврата предыдущего Source
     return;
   }
+
+  // curpos/totlen обновляем независимо от того, распарсятся ли Title/Artist ниже —
+  // это отдельные поля того же ответа, прогресс-бар веб-страницы не должен зависеть
+  // от успеха разбора текста трека
+  trackPosMs = extractLongField(payload, "\"curpos\":\"");
+  trackLenMs = extractLongField(payload, "\"totlen\":\"");
+  trackCaptureMillis = millis();
 
   char title[32];
   char artist[32];
@@ -195,6 +229,15 @@ void pollArylicMetadata() {
     snprintf(combined, sizeof(combined), "%s - %s", artist, title);
   } else {
     snprintf(combined, sizeof(combined), "%s%s", artist, title);
+  }
+
+  // Отдельная, более длинная копия для веб-страницы (см. trackText в arylic_metadata.h) —
+  // combined уже обрезан до MEGA_LINK_META_MAX_LEN для Mega, так что заново форматируем
+  // без этого ограничения, а не переиспользуем combined
+  if (artist[0] && title[0]) {
+    snprintf(trackText, sizeof(trackText), "%s - %s", artist, title);
+  } else {
+    snprintf(trackText, sizeof(trackText), "%s%s", artist, title);
   }
 
   megaLinkSendMetadata(combined);
