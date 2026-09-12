@@ -140,6 +140,28 @@ static long extractLongField(const String& payload, const char* key) {
   return atol(payload.c_str() + idx + strlen(key));
 }
 
+// "mode" — тоже простая строка (не hex), но не число — код источника ("1" = AirPlay,
+// "31" = Spotify Connect, проверено live). Та же логика поиска закрывающей кавычки, что у
+// extractHexField, просто без hex-декодирования
+static void extractStringField(const String& payload, const char* key, char* out, size_t outMax) {
+  out[0] = '\0';
+  int idx = payload.indexOf(key);
+  if (idx < 0) {
+    return;
+  }
+  const char* start = payload.c_str() + idx + strlen(key);
+  const char* end = strchr(start, '"');
+  if (!end) {
+    return;
+  }
+  size_t len = end - start;
+  if (len >= outMax) {
+    len = outMax - 1;
+  }
+  memcpy(out, start, len);
+  out[len] = '\0';
+}
+
 // Простой strstr по плоскому JSON — ответ Arylic одноуровневый (см. arylic_metadata.h),
 // полноценный JSON-парсер тут не нужен и не стоит своего RAM
 static void extractHexField(const String& payload, const char* key, char* out, size_t outMax) {
@@ -296,6 +318,19 @@ void pollArylicMetadata() {
   if (title[0] == '\0' && artist[0] == '\0') {
     Serial.println("[arylic] играет, но Title/Artist не найдены в ответе — сырой ответ:");
     Serial.println(payload);
+    // Без этого trackText оставался бы текстом ПРЕДЫДУЩЕГО трека (static-буфер, никто его
+    // не очищал в этой ветке) — вводит в заблуждение, будто метадата и правда пришла.
+    // AirPlay (mode "1") не отдаёт метадату вообще, ни у нас, ни в родном приложении
+    // производителя (проверено live, см. project_arylic_airplay_no_metadata в памяти) —
+    // показываем хотя бы источник вместо пустого/устаревшего текста
+    char mode[8];
+    extractStringField(payload, "\"mode\":\"", mode, sizeof(mode));
+    if (strcmp(mode, "1") == 0) {
+      strncpy(trackText, "AirPlay", sizeof(trackText) - 1);
+      trackText[sizeof(trackText) - 1] = '\0';
+    } else {
+      trackText[0] = '\0';
+    }
     return;
   }
 
