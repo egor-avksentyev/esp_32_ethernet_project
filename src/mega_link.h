@@ -8,10 +8,9 @@
 // "Протокол UART".
 //
 // Приёмник на стороне Mega реализован (esp32_link.h/.cpp, ветка feature/esp32-uart-receiver
-// в репозитории 260422-030547-megaatmega2560, 2026-09-10) — CMD:/IP:/PLAY:/ARYLIC:
-// принимаются и используются (META:/PLAY: двигают полноэкранный "Now Playing" и
-// автопереключение Source, IP:/ARYLIC: показываются в пункте меню Info). CMD: пока
-// распознаётся, но не исполняется — см. esp32_link.h в том репозитории.
+// в репозитории 260422-030547-megaatmega2560, 2026-09-10) — CMD:/IP:/PLAY:/ARYLIC:/SRC:
+// принимаются и используются (META:/PLAY:/SRC: двигают полноэкранный "Now Playing" и
+// автопереключение Source, IP:/ARYLIC: показываются в пункте меню Info).
 // ============================================================================
 
 #include <Arduino.h>
@@ -46,3 +45,11 @@ void megaLinkSendPlayState(bool playing);
 // сети на этом опросе (не то же самое, что playing — устройство может быть доступно, но
 // ничего не играть). Для показа в пункте меню Info на Mega ("Arylic ok"/"disconnected")
 void megaLinkSendArylicStatus(bool ok);
+
+// Отправляет "SRC:<name>\n" — источник воспроизведения ("Spotify", "AirPlay", ...; см.
+// computeSourceName() в arylic_metadata.cpp), не путать с пунктом меню "Source" на Mega
+// (тот про физическое реле AUX/CD/DAT/Streamer, это — про то, какой стриминг-сервис/
+// протокол сейчас играет через Arylic). Отправляется на каждом опросе, пока играет — тем
+// же принципом, что и PLAY:/META: выше. name может быть пустой строкой (источник не
+// распознан) — text без переводов строк, обрезается до разумной длины
+void megaLinkSendSource(const char* name);

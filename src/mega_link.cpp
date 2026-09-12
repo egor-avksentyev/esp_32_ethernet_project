@@ -40,3 +40,9 @@ void megaLinkSendArylicStatus(bool ok) {
   MegaSerial.print(ok ? "OK" : "FAIL");
   MegaSerial.print('\n');
 }
+
+void megaLinkSendSource(const char* name) {
+  MegaSerial.print("SRC:");
+  MegaSerial.print(name); // короткое (см. computeSourceName), MEGA_LINK_META_MAX_LEN не нужен
+  MegaSerial.print('\n');
+}

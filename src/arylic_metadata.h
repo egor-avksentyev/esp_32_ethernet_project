@@ -64,3 +64,10 @@ unsigned long arylicTrackAgeMs();
 // "" если обложки нет — в частности AirPlay/Apple Music не отдаёт её вообще, проверено live
 // (см. project_arylic_airplay_no_metadata в памяти) — не считать это багом парсинга
 String arylicTrackArtUrl();
+
+// Источник воспроизведения ("Spotify", "AirPlay", "DLNA", ...) — из "vendor" (для сервисов
+// с нативной интеграцией вроде Spotify Connect) или, если он пуст, из "mode" (см.
+// computeSourceName() в arylic_metadata.cpp). "" — код источника не распознан, не гадаем.
+// В отличие от trackText, заполняется даже когда Title/Artist разобрать не удалось
+// (типичный случай — AirPlay, см. project_arylic_airplay_no_metadata в памяти)
+String arylicTrackSourceName();

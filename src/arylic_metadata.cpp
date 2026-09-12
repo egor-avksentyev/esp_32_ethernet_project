@@ -2,6 +2,7 @@
 #include "config.h"
 #include "wifi_setup.h"
 #include "mega_link.h"
+#include <ctype.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -31,6 +32,7 @@ static long trackLenMs = 0;
 static unsigned long trackCaptureMillis = 0;
 static bool trackPlaying = false;
 static char trackArtUrl[160] = "";
+static char trackSourceName[24] = "";
 
 bool arylicTrackIsPlaying() { return trackPlaying; }
 String arylicTrackText() { return String(trackText); }
@@ -38,6 +40,7 @@ long arylicTrackPosMs() { return trackPosMs; }
 long arylicTrackLenMs() { return trackLenMs; }
 unsigned long arylicTrackAgeMs() { return millis() - trackCaptureMillis; }
 String arylicTrackArtUrl() { return String(trackArtUrl); }
+String arylicTrackSourceName() { return String(trackSourceName); }
 
 static void invalidateArylicIp() {
   arylicIpKnown = false;
@@ -162,6 +165,56 @@ static void extractStringField(const String& payload, const char* key, char* out
   out[len] = '\0';
 }
 
+// Источник воспроизведения — сначала пробуем "vendor" (у Spotify Connect это
+// "spotify:playlist:..."/"spotify:track:..." — берём схему до первого ":"), а если он
+// пуст — откатываемся на "mode" (у AirPlay vendor всегда пуст, см. project_arylic_
+// airplay_no_metadata в памяти Mega-репозитория). Официальная таблица кодов mode
+// (github.com/AndersFluur/LinkPlayApi) не совпадает с тем, что реально отдаёт это
+// устройство (там нет кода 31, который мы видим live для Spotify Connect) — поэтому здесь
+// только те коды, что подтверждены живьём или взяты из документации как стабильные общие
+// случаи, никаких догадок
+static void computeSourceName(const String& payload) {
+  char vendor[48];
+  extractStringField(payload, "\"vendor\":\"", vendor, sizeof(vendor));
+  if (vendor[0] != '\0') {
+    char* colon = strchr(vendor, ':');
+    if (colon) {
+      *colon = '\0';
+    }
+    if (strcasecmp(vendor, "spotify") == 0) {
+      strcpy(trackSourceName, "Spotify");
+    } else if (strcasecmp(vendor, "tidal") == 0) {
+      strcpy(trackSourceName, "Tidal");
+    } else if (strcasecmp(vendor, "deezer") == 0) {
+      strcpy(trackSourceName, "Deezer");
+    } else if (strcasecmp(vendor, "qobuz") == 0) {
+      strcpy(trackSourceName, "Qobuz");
+    } else if (strcasecmp(vendor, "amazon") == 0) {
+      strcpy(trackSourceName, "Amazon Music");
+    } else {
+      snprintf(trackSourceName, sizeof(trackSourceName), "%s", vendor);
+      trackSourceName[0] = toupper(trackSourceName[0]);
+    }
+    return;
+  }
+
+  char mode[8];
+  extractStringField(payload, "\"mode\":\"", mode, sizeof(mode));
+  if (strcmp(mode, "1") == 0) {
+    strcpy(trackSourceName, "AirPlay"); // подтверждено live 2026-09-12
+  } else if (strcmp(mode, "2") == 0) {
+    strcpy(trackSourceName, "DLNA");
+  } else if (strcmp(mode, "40") == 0) {
+    strcpy(trackSourceName, "Line-In");
+  } else if (strcmp(mode, "41") == 0) {
+    strcpy(trackSourceName, "Bluetooth");
+  } else if (strcmp(mode, "43") == 0) {
+    strcpy(trackSourceName, "Optical");
+  } else {
+    trackSourceName[0] = '\0'; // неизвестный код — не гадаем, лучше пусто
+  }
+}
+
 // Простой strstr по плоскому JSON — ответ Arylic одноуровневый (см. arylic_metadata.h),
 // полноценный JSON-парсер тут не нужен и не стоит своего RAM
 static void extractHexField(const String& payload, const char* key, char* out, size_t outMax) {
@@ -273,6 +326,7 @@ void pollArylicMetadata() {
     reachable = false;
     trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
     trackArtUrl[0] = '\0';
+    trackSourceName[0] = '\0';
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
@@ -296,6 +350,7 @@ void pollArylicMetadata() {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
     // что нужно для выхода из Now Playing/возврата предыдущего Source
     trackArtUrl[0] = '\0';
+    trackSourceName[0] = '\0';
     return;
   }
 
@@ -310,6 +365,12 @@ void pollArylicMetadata() {
   // только пока реально играет, тем же принципом, что и curpos/totlen выше
   pollArylicAlbumArt(resolveArylicIp());
 
+  // Источник (Spotify/AirPlay/...) — тоже независимо от того, распарсятся ли Title/Artist
+  // ниже: AirPlay на этом устройстве не отдаёт их вообще (см. computeSourceName), но само
+  // название источника получить можно всегда
+  computeSourceName(payload);
+  megaLinkSendSource(trackSourceName);
+
   char title[32];
   char artist[32];
   extractHexField(payload, "\"Title\":\"", title, sizeof(title));
@@ -320,17 +381,10 @@ void pollArylicMetadata() {
     Serial.println(payload);
     // Без этого trackText оставался бы текстом ПРЕДЫДУЩЕГО трека (static-буфер, никто его
     // не очищал в этой ветке) — вводит в заблуждение, будто метадата и правда пришла.
-    // AirPlay (mode "1") не отдаёт метадату вообще, ни у нас, ни в родном приложении
-    // производителя (проверено live, см. project_arylic_airplay_no_metadata в памяти) —
-    // показываем хотя бы источник вместо пустого/устаревшего текста
-    char mode[8];
-    extractStringField(payload, "\"mode\":\"", mode, sizeof(mode));
-    if (strcmp(mode, "1") == 0) {
-      strncpy(trackText, "AirPlay", sizeof(trackText) - 1);
-      trackText[sizeof(trackText) - 1] = '\0';
-    } else {
-      trackText[0] = '\0';
-    }
+    // AirPlay не отдаёт метадату вообще, ни у нас, ни в родном приложении производителя
+    // (проверено live, см. project_arylic_airplay_no_metadata в памяти) — но название
+    // источника уже отправлено выше (megaLinkSendSource), этого тут достаточно
+    trackText[0] = '\0';
     return;
   }
 

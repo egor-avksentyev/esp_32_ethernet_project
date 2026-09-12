@@ -51,6 +51,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onclick=cmd('power')>Power</button></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt style='display:none;max-width:120px;border-radius:6px;margin-bottom:6px'>"
+  "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:.95em;color:#ccc;margin-bottom:4px'></div>"
   "<div style='background:#333;border-radius:6px;height:8px;overflow:hidden'>"
   "<div id=trackBar style='background:#8cf;height:100%;width:0%'></div></div>"
@@ -91,6 +92,11 @@ static const char PAGE_HTML[] PROGMEM =
   "trackPlayingNow=j.playing;trackLen=j.len;trackPos=j.pos+j.age;trackFetchTime=Date.now();"
   "document.getElementById('trackWrap').style.display=j.playing?'block':'none';"
   "if(j.playing)document.getElementById('trackTitle').innerText=j.text;"
+  // Источник (Spotify/AirPlay/...) — отдельная строка, показывается независимо от того,
+  // распарсились ли title/artist (AirPlay их не отдаёт вообще, но источник знать можно)
+  "let src=document.getElementById('trackSource');"
+  "if(j.playing&&j.source){src.innerText=j.source;src.style.display='block'}"
+  "else{src.style.display='none'}"
   // Обложка отдаётся ссылкой на CDN сервиса-источника, не байтами — сам img её и грузит.
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h)
   "let art=document.getElementById('trackArt');"
@@ -187,6 +193,8 @@ static void handleTrack() {
   resp += jsonEscape(arylicTrackText());
   resp += "\",\"art\":\"";
   resp += jsonEscape(arylicTrackArtUrl());
+  resp += "\",\"source\":\"";
+  resp += jsonEscape(arylicTrackSourceName());
   resp += "\",\"pos\":";
   resp += String(arylicTrackPosMs());
   resp += ",\"len\":";
