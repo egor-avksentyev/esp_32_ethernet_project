@@ -3,6 +3,7 @@
 #include "wifi_setup.h"
 #include "mega_link.h"
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
@@ -29,12 +30,14 @@ static long trackPosMs = 0;
 static long trackLenMs = 0;
 static unsigned long trackCaptureMillis = 0;
 static bool trackPlaying = false;
+static char trackArtUrl[160] = "";
 
 bool arylicTrackIsPlaying() { return trackPlaying; }
 String arylicTrackText() { return String(trackText); }
 long arylicTrackPosMs() { return trackPosMs; }
 long arylicTrackLenMs() { return trackLenMs; }
 unsigned long arylicTrackAgeMs() { return millis() - trackCaptureMillis; }
+String arylicTrackArtUrl() { return String(trackArtUrl); }
 
 static void invalidateArylicIp() {
   arylicIpKnown = false;
@@ -160,6 +163,72 @@ static void extractHexField(const String& payload, const char* key, char* out, s
   decodeHexField(hexBuf, out, outMax);
 }
 
+// TrackMetaData внутри ответа UPnP — XML, вложенный в XML, поэтому дважды экранирован:
+// реальные байты содержат буквально "&lt;upnp:albumArtURI&gt;URL&lt;/upnp:albumArtURI&gt;",
+// не настоящие "<"/">". Полноценный XML-парсер тут так же не нужен, как и JSON-парсер выше
+// (extractHexField) — просто ищем открывающий маркер по имени тега, значение — до ближайшего
+// следующего "&lt;" (начала любого закрывающего тега)
+static void extractEscapedXmlTag(const String& payload, const char* tagName, char* out, size_t outMax) {
+  out[0] = '\0';
+  String openMarker = String(tagName) + "&gt;";
+  int start = payload.indexOf(openMarker);
+  if (start < 0) {
+    return;
+  }
+  start += openMarker.length();
+  int end = payload.indexOf("&lt;", start);
+  if (end < 0 || end < start) {
+    return;
+  }
+  size_t len = end - start;
+  if (len >= outMax) {
+    len = outMax - 1;
+  }
+  payload.substring(start, start + len).toCharArray(out, len + 1);
+}
+
+// Обложка альбома — отдельный запрос, не тот же HTTPS API (там этого поля нет вообще, см.
+// arylic_metadata.h). UPnP AVTransport — обычный HTTP (без TLS), другой порт (ARYLIC_UPNP_PORT).
+// Вызывается из pollArylicMetadata() только пока трек играет — не имеет смысла опрашивать,
+// когда играть нечему
+static void pollArylicAlbumArt(const IPAddress& ip) {
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(2000);
+
+  String url = "http://";
+  url += ip.toString();
+  url += ":";
+  url += String(ARYLIC_UPNP_PORT);
+  url += ARYLIC_UPNP_CONTROL_PATH;
+  http.begin(client, url);
+  http.addHeader("Content-Type", "text/xml; charset=\"utf-8\"");
+  http.addHeader("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\"");
+
+  static const char soapBody[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" "
+    "s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">"
+    "<s:Body><u:GetPositionInfo xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">"
+    "<InstanceID>0</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>";
+
+  int httpCode = http.POST((uint8_t*)soapBody, strlen(soapBody));
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    trackArtUrl[0] = '\0';
+    return;
+  }
+  String payload = http.getString();
+  http.end();
+
+  extractEscapedXmlTag(payload, "albumArtURI", trackArtUrl, sizeof(trackArtUrl));
+  // AirPlay/Apple Music отдаёт буквально строку "un_known" вместо ссылки (проверено live,
+  // см. project_arylic_airplay_no_metadata в памяти) — это не URL, прятать как отсутствие
+  if (strcmp(trackArtUrl, "un_known") == 0) {
+    trackArtUrl[0] = '\0';
+  }
+}
+
 void pollArylicMetadata() {
   static unsigned long lastPoll = 0;
   if (!wifiIsConnected() || millis() - lastPoll < ARYLIC_POLL_INTERVAL_MS) {
@@ -181,6 +250,7 @@ void pollArylicMetadata() {
     http.end();
     reachable = false;
     trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
+    trackArtUrl[0] = '\0';
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
@@ -203,6 +273,7 @@ void pollArylicMetadata() {
   if (!playing) {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
     // что нужно для выхода из Now Playing/возврата предыдущего Source
+    trackArtUrl[0] = '\0';
     return;
   }
 
@@ -212,6 +283,10 @@ void pollArylicMetadata() {
   trackPosMs = extractLongField(payload, "\"curpos\":\"");
   trackLenMs = extractLongField(payload, "\"totlen\":\"");
   trackCaptureMillis = millis();
+
+  // Обложка — отдельный запрос (другой порт/протокол, см. pollArylicAlbumArt) — вызываем
+  // только пока реально играет, тем же принципом, что и curpos/totlen выше
+  pollArylicAlbumArt(resolveArylicIp());
 
   char title[32];
   char artist[32];

@@ -31,6 +31,12 @@
 // И mDNS-резолв тоже почему-то перестанет работать одновременно (маловероятно, но не невозможно)
 #define ARYLIC_IP_OCTETS 192, 168, 1, 139
 #define ARYLIC_POLL_INTERVAL_MS 3000
+// UPnP AVTransport control (GetPositionInfo — обложка альбома, см. arylic_metadata.cpp),
+// отдельный от основного HTTPS-порта запрос. Порт и путь найдены live 2026-09-12 через
+// description.xml на реальном устройстве (Linkplay.4.6.529755) — если Arylic заменят на
+// другое физическое устройство/прошивку, пересмотреть тем же способом
+#define ARYLIC_UPNP_PORT 49152
+#define ARYLIC_UPNP_CONTROL_PATH "/upnp/control/rendertransport1"
 
 // --- Wi-Fi: подключение сохранённой сетью + реконнект (wifi_setup.h/.cpp) ---
 // SSID/пароль хранятся в NVS (Preferences), не в коде — см. wifiSaveCredentials()/
