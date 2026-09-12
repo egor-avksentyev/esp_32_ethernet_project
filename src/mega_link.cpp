@@ -46,3 +46,11 @@ void megaLinkSendSource(const char* name) {
   MegaSerial.print(name); // короткое (см. computeSourceName), MEGA_LINK_META_MAX_LEN не нужен
   MegaSerial.print('\n');
 }
+
+void megaLinkSendPosition(long posMs, long lenMs) {
+  MegaSerial.print("POS:");
+  MegaSerial.print(posMs);
+  MegaSerial.print(':');
+  MegaSerial.print(lenMs);
+  MegaSerial.print('\n');
+}

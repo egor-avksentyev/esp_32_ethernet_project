@@ -8,8 +8,8 @@
 // "Протокол UART".
 //
 // Приёмник на стороне Mega реализован (esp32_link.h/.cpp, ветка feature/esp32-uart-receiver
-// в репозитории 260422-030547-megaatmega2560, 2026-09-10) — CMD:/IP:/PLAY:/ARYLIC:/SRC:
-// принимаются и используются (META:/PLAY:/SRC: двигают полноэкранный "Now Playing" и
+// в репозитории 260422-030547-megaatmega2560, 2026-09-10) — CMD:/IP:/PLAY:/ARYLIC:/SRC:/POS:
+// принимаются и используются (META:/PLAY:/SRC:/POS: двигают полноэкранный "Now Playing" и
 // автопереключение Source, IP:/ARYLIC: показываются в пункте меню Info).
 // ============================================================================
 
@@ -53,3 +53,11 @@ void megaLinkSendArylicStatus(bool ok);
 // же принципом, что и PLAY:/META: выше. name может быть пустой строкой (источник не
 // распознан) — text без переводов строк, обрезается до разумной длины
 void megaLinkSendSource(const char* name);
+
+// Отправляет "POS:<posMs>:<lenMs>\n" — позиция и общая длительность трека НА МОМЕНТ этого
+// опроса (см. trackPosMs/trackLenMs в arylic_metadata.cpp — те же значения, что уходят на
+// веб-страницу через /track). Mega сама досчитывает позицию между кадрами по своему millis()
+// (как и веб-страница по Date.now(), см. arylicTrackAgeMs() в arylic_metadata.h) — не нужно
+// слать эту команду чаще, чем раз в опрос. Не отправляется, пока не играет (см. вызов в
+// arylic_metadata.cpp) — Mega просто не обновляет прогресс-бар, пока не пришло PLAY:1
+void megaLinkSendPosition(long posMs, long lenMs);

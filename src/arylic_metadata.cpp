@@ -398,6 +398,7 @@ void pollArylicMetadata() {
   trackPosMs = extractLongField(payload, "\"curpos\":\"");
   trackLenMs = extractLongField(payload, "\"totlen\":\"");
   trackCaptureMillis = millis();
+  megaLinkSendPosition(trackPosMs, trackLenMs);
 
   // Обложка — отдельный запрос (другой порт/протокол, см. pollArylicAlbumArt) — вызываем
   // только пока реально играет, тем же принципом, что и curpos/totlen выше

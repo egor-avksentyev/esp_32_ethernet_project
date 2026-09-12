@@ -53,10 +53,12 @@ static const char PAGE_HTML[] PROGMEM =
   "<img id=trackArt style='display:none;max-width:120px;border-radius:6px;margin-bottom:6px'>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:.95em;color:#ccc;margin-bottom:4px'></div>"
+  "<div id=trackProgress>"
   "<div style='background:#333;border-radius:6px;height:8px;overflow:hidden'>"
   "<div id=trackBar style='background:#8cf;height:100%;width:0%'></div></div>"
   "<div style='font-size:.8em;color:#888;margin-top:2px'>"
-  "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div></div>"
+  "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div>"
+  "</div></div>"
   "<div id=playbackWrap style='margin-top:10px;display:none'>"
   "<button onclick=playerCmd('prev')>&laquo;</button>"
   "<button onclick=playerCmd('onepause')>Play/Pause</button>"
@@ -116,6 +118,10 @@ static const char PAGE_HTML[] PROGMEM =
   "let src=document.getElementById('trackSource');"
   "if(j.playing&&j.source){src.innerText=j.source;src.style.display='block'}"
   "else{src.style.display='none'}"
+  // Позиция трека для AirPlay не двигается вообще (устройство её не отдаёт ни в одном
+  // известном API, проверено live — см. arylic_metadata.h) — полоска бы просто застыла на
+  // месте и вводила в заблуждение, поэтому для этого источника прячем её целиком
+  "document.getElementById('trackProgress').style.display=(j.source==='AirPlay')?'none':'block';"
   // Обложка отдаётся ссылкой на CDN сервиса-источника, не байтами — сам img её и грузит.
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h)
   "let art=document.getElementById('trackArt');"
