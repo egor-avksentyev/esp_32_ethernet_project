@@ -57,6 +57,14 @@ static const char PAGE_HTML[] PROGMEM =
   "<div id=trackBar style='background:#8cf;height:100%;width:0%'></div></div>"
   "<div style='font-size:.8em;color:#888;margin-top:2px'>"
   "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div></div>"
+  "<div id=playbackWrap style='margin-top:10px;display:none'>"
+  "<button onclick=playerCmd('prev')>&laquo;</button>"
+  "<button onclick=playerCmd('onepause')>Play/Pause</button>"
+  "<button onclick=playerCmd('next')>&raquo;</button>"
+  "<div style='margin-top:8px'>"
+  "<input id=volSlider type=range min=0 max=100 value=50 style='width:70%' "
+  "oninput='volDragging=true' onchange=setVolume(this.value)>"
+  "</div></div>"
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp()>Применить</button></div>"
@@ -80,8 +88,19 @@ static const char PAGE_HTML[] PROGMEM =
   "let parts=t.split(' ');let ok=(parts[0]=='OK');let ip=parts[1]||'';"
   "let el=document.getElementById('arylicIp');"
   "el.disabled=ok;document.getElementById('arylicApply').disabled=ok;"
-  "if(ok&&ip)el.value=ip})}"
+  "if(ok&&ip)el.value=ip;"
+  // Play/Pause/Next/Prev и громкость видны, только пока Arylic реально доступен — не привязано
+  // к j.playing (трек может быть на паузе, громкость и play всё равно нужны)
+  "document.getElementById('playbackWrap').style.display=ok?'block':'none'"
+  "})}"
   "setInterval(pollArylic,3000);pollArylic();"
+  // play/pause через "onepause" — сам переключает состояние, не полагаясь на то, что
+  // getPlayerStatus считает текущим (это поле неточное для AirPlay, см. arylic_metadata.h)
+  "function playerCmd(a){fetch('/playback?action='+a)}"
+  // volDragging блокирует перезапись ползунка живым опросом, пока палец/курсор ещё на нём —
+  // без этого ползунок дёргался бы обратно к старому значению между отпусканием и applied-ответом
+  "let volDragging=false;"
+  "function setVolume(v){fetch('/volume?value='+v);setTimeout(()=>{volDragging=false},1000)}"
   // Прогресс трека: /track опрашивается раз в 3с (как всё остальное), а между опросами
   // позиция досчитывается локально по реальному прошедшему времени (Date.now()), чтобы
   // полоска ехала плавно, а не прыгала раз в 3с — см. arylic_metadata.h за объяснением age
@@ -101,7 +120,8 @@ static const char PAGE_HTML[] PROGMEM =
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h)
   "let art=document.getElementById('trackArt');"
   "if(j.playing&&j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
-  "else{art.style.display='none'}})}"
+  "else{art.style.display='none'}"
+  "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
   "function tickTrack(){if(!trackPlayingNow)return;"
   "let pos=trackPos+(Date.now()-trackFetchTime);if(trackLen>0&&pos>trackLen)pos=trackLen;"
   "document.getElementById('trackCur').innerText=fmtTime(pos);"
@@ -201,8 +221,44 @@ static void handleTrack() {
   resp += String(arylicTrackLenMs());
   resp += ",\"age\":";
   resp += String(arylicTrackAgeMs());
+  resp += ",\"vol\":";
+  resp += String(arylicCurrentVolume()); // -1, если ещё неизвестна — JS это условие проверяет
   resp += "}";
   server.send(200, "application/json", resp);
+}
+
+// Разрешённые действия управления воспроизведением — белый список, чтобы в API Arylic не
+// ушло что попало из query-параметра запроса (см. arylicSendPlayerCommand() —
+// подтверждено live 2026-09-12, что play/pause/next/prev реально доходят и до AirPlay-сессии
+// на телефоне через его обратный канал, не только до нативных интеграций вроде Spotify Connect)
+static const char* const PLAYBACK_ACTIONS[] = {"onepause", "next", "prev"};
+static const uint8_t PLAYBACK_ACTIONS_COUNT = sizeof(PLAYBACK_ACTIONS) / sizeof(PLAYBACK_ACTIONS[0]);
+
+static void handlePlayback() {
+  if (!server.hasArg("action")) {
+    server.send(400, "text/plain", "no action");
+    return;
+  }
+  String action = server.arg("action");
+  for (uint8_t i = 0; i < PLAYBACK_ACTIONS_COUNT; i++) {
+    if (action == PLAYBACK_ACTIONS[i]) {
+      arylicSendPlayerCommand(PLAYBACK_ACTIONS[i]);
+      server.send(204);
+      return;
+    }
+  }
+  server.send(400, "text/plain", "unknown action");
+}
+
+// Громкость самого усилителя Arylic (не громкость на телефоне) — работает независимо от
+// источника, в отличие от play/pause/next/prev
+static void handleVolume() {
+  if (!server.hasArg("value")) {
+    server.send(400, "text/plain", "no value");
+    return;
+  }
+  arylicSetVolume(server.arg("value").toInt());
+  server.send(204);
 }
 
 // Сознательная смена сети без физического переезда (см. wifi_provisioning.h за тем, зачем
@@ -224,6 +280,8 @@ void webControlBegin() {
   server.on("/arylic-status", handleArylicStatus);
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.on("/track", handleTrack);
+  server.on("/playback", handlePlayback);
+  server.on("/volume", handleVolume);
   server.onNotFound(handleNotFound);
   server.begin();
 }

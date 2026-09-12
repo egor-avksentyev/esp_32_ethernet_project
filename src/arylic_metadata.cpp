@@ -33,6 +33,7 @@ static unsigned long trackCaptureMillis = 0;
 static bool trackPlaying = false;
 static char trackArtUrl[160] = "";
 static char trackSourceName[24] = "";
+static int currentVolume = -1;
 
 bool arylicTrackIsPlaying() { return trackPlaying; }
 String arylicTrackText() { return String(trackText); }
@@ -41,6 +42,7 @@ long arylicTrackLenMs() { return trackLenMs; }
 unsigned long arylicTrackAgeMs() { return millis() - trackCaptureMillis; }
 String arylicTrackArtUrl() { return String(trackArtUrl); }
 String arylicTrackSourceName() { return String(trackSourceName); }
+int arylicCurrentVolume() { return currentVolume; }
 
 static void invalidateArylicIp() {
   arylicIpKnown = false;
@@ -108,6 +110,37 @@ static String arylicUrl() {
   url += resolveArylicIp().toString();
   url += "/httpapi.asp?command=getPlayerStatus";
   return url;
+}
+
+// Общий отправитель команд управления (play/pause/next/prev/volume) — один запрос,
+// без ожидания ответа с данными (Arylic отвечает просто "OK"). Отдельная от
+// pollArylicMetadata() функция и HTTPClient-инстанс — эта вызывается по действию
+// пользователя на веб-странице, не по таймеру опроса
+static bool sendArylicCommand(const String& command) {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.setTimeout(2000);
+  String url = "https://";
+  url += resolveArylicIp().toString();
+  url += "/httpapi.asp?command=";
+  url += command;
+  http.begin(client, url);
+  int httpCode = http.GET();
+  String resp = http.getString();
+  http.end();
+  return httpCode == HTTP_CODE_OK && resp == "OK";
+}
+
+bool arylicSendPlayerCommand(const char* command) {
+  return sendArylicCommand(String("setPlayerCmd:") + command);
+}
+
+bool arylicSetVolume(int percent) {
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  return sendArylicCommand(String("setPlayerCmd:vol:") + percent);
 }
 
 static int hexNibble(char c) {
@@ -327,6 +360,7 @@ void pollArylicMetadata() {
     trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
     trackArtUrl[0] = '\0';
     trackSourceName[0] = '\0';
+    currentVolume = -1;
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
@@ -342,6 +376,10 @@ void pollArylicMetadata() {
 
   String payload = http.getString();
   http.end();
+
+  // Громкость усилителя — актуальна независимо от того, играет ли что-то сейчас (в отличие
+  // от curpos/totlen/title ниже), поэтому обновляется тут, а не внутри блока playing
+  currentVolume = (int)extractLongField(payload, "\"vol\":\"");
 
   bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
   megaLinkSendPlayState(playing);

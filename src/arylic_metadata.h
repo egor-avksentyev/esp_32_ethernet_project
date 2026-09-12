@@ -71,3 +71,25 @@ String arylicTrackArtUrl();
 // В отличие от trackText, заполняется даже когда Title/Artist разобрать не удалось
 // (типичный случай — AirPlay, см. project_arylic_airplay_no_metadata в памяти)
 String arylicTrackSourceName();
+
+// --- Управление воспроизведением (web_control.cpp, GET /playback, /volume) ---
+// Работает и через AirPlay (проверено live 2026-09-12: play/pause/next/prev реально доходят
+// до телефона через обратный канал AirPlay, звук физически останавливался/менялся) — хотя
+// поле "status" в getPlayerStatus при этом не меняется (остаётся "play" даже когда реально
+// пауза) и "curpos" не двигается вообще, пока играет AirPlay (см. project_arylic_airplay_
+// no_metadata в памяти — те же поля ненадёжны и для прогресс-бара). Поэтому кнопка play/pause
+// сделана через "onepause" (сама переключает состояние, не спрашивая, что сейчас) — на
+// врущий "status" полагаться нельзя
+
+// "onepause" (play/pause, переключает сам), "next", "prev" — свободный текст не принимается,
+// вызывающая сторона (handlePlayback() в web_control.cpp) целиком отвечает за то, что сюда
+// попадает только один из этих трёх вариантов
+bool arylicSendPlayerCommand(const char* command);
+
+// 0-100, зажимается на границах. Работает независимо от источника — это громкость самого
+// усилителя Arylic, не звука на телефоне
+bool arylicSetVolume(int percent);
+
+// Последнее известное значение громкости (0-100) из getPlayerStatus, -1 — ещё не приходило
+// ни разу (например Arylic пока недоступен)
+int arylicCurrentVolume();
