@@ -468,7 +468,24 @@ static void pollArylicMetadataOnce() {
   }
   http.end();
 
+  // Дебаунс на несколько опросов подряд — раньше даже ОДИН неудачный запрос (разовый WiFi/TLS-
+  // дребезг, а не настоящая потеря связи) сразу считался "Arylic пропал", слал Mega PLAY:0 и
+  // тут же инвалидировал закэшированный IP (провоцируя ещё и медленный mDNS-резолв на
+  // следующем опросе, который сам может не уложиться в таймаут). Если следующий опрос (уже
+  // через ARYLIC_POLL_INTERVAL_MS) при этом снова успешен — получалось короткое реле "туда-
+  // сюда" без видимой причины: редкий, но реальный баг, замеченный пользователем live.
+  // ARYLIC_UNREACHABLE_STREAK опросов подряд — это ~1.5с при текущем интервале 500мс,
+  // достаточно, чтобы отфильтровать единичный дребезг, но не настолько долго, чтобы заметно
+  // задержать честное обнаружение реальной потери связи
+  static uint8_t consecutiveFailCount = 0;
   if (httpCode != HTTP_CODE_OK) {
+    consecutiveFailCount++;
+    Serial.print("[arylic] запрос не удался, код: ");
+    Serial.println(httpCode);
+    if (consecutiveFailCount < ARYLIC_UNREACHABLE_STREAK) {
+      return; // ещё может быть разовым дребезгом — состояние (reachable/playing/...) не трогаем
+    }
+
     bool wasReachable;
     {
       MutexGuard g(stateMutex);
@@ -487,8 +504,6 @@ static void pollArylicMetadataOnce() {
     if (wasReachable) {
       Serial.println("[arylic] связь потеряна, не слышу Arylic");
     }
-    Serial.print("[arylic] запрос не удался, код: ");
-    Serial.println(httpCode);
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
@@ -496,6 +511,7 @@ static void pollArylicMetadataOnce() {
     megaLinkSendPlayState(false);
     return;
   }
+  consecutiveFailCount = 0;
 
   bool wasReachable;
   {

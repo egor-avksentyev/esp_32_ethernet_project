@@ -35,6 +35,11 @@
 // страницы, а нагрузка на сам Arylic (TLS-хендшейк без keep-alive на каждый опрос) и на CPU/Wi-Fi
 // ESP32; 500 — разумный компромисс, если начнутся сбои связи с Arylic — увеличить
 #define ARYLIC_POLL_INTERVAL_MS 500
+// Сколько НЕУДАЧНЫХ опросов подряд считать реальной потерей связи (не разовым WiFi/TLS-
+// дребезгом) — см. подробное объяснение в pollArylicMetadataOnce() (arylic_metadata.cpp).
+// 3 опроса при интервале 500мс — это ~1.5с, отфильтровывает единичный сбой, не задерживая
+// заметно реальное обнаружение отключения
+#define ARYLIC_UNREACHABLE_STREAK 3
 // UPnP AVTransport control (GetPositionInfo — обложка альбома, см. arylic_metadata.cpp),
 // отдельный от основного HTTPS-порта запрос. Порт и путь найдены live 2026-09-12 через
 // description.xml на реальном устройстве (Linkplay.4.6.529755) — если Arylic заменят на
