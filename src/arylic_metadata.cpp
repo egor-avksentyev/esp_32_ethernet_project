@@ -8,13 +8,36 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+
+// Всё изменяемое состояние ниже пишет фоновая задача (см. arylicMetadataBegin(), крутится на
+// втором ядре) и читает основной loop() (web_control.cpp — геттеры вызываются из обработчиков
+// HTTP-запросов). Одним mutex'ом защищаем все поля разом — критические секции всегда короткие
+// (просто присвоение/чтение), сами сетевые запросы (HTTPClient/MDNS) идут ВНЕ лока, чтобы не
+// заставлять веб-сервер ждать TLS-хендшейк
+static SemaphoreHandle_t stateMutex = nullptr;
+
+struct MutexGuard {
+  SemaphoreHandle_t handle;
+  explicit MutexGuard(SemaphoreHandle_t h) : handle(h) { xSemaphoreTake(handle, portMAX_DELAY); }
+  ~MutexGuard() { xSemaphoreGive(handle); }
+};
+
+// ПОПЫТКА объединить getPlayerStatus (опрос) и setPlayerCmd (команды с кнопок) на один общий
+// TLS-канал с мьютексом была откачена (см. git-историю) — по факту стало ХУЖЕ (3-4с вместо
+// 2с): похоже, Arylic не держит соединение живым между запросами (закрывает сразу после
+// ответа), так что общий мьютекс только добавлял ожидание друг друга поверх двух и так
+// небыстрых хендшейков, не давая обещанного переиспользования. Раздельные static-клиенты
+// ниже (по одному на опрос и на команды) хотя бы не мешают друг другу
 
 // Резолвит ARYLIC_MDNS_HOSTNAME через mDNS (см. config.h — имя найдено live через
 // `dns-sd -B _linkplay._tcp local.`, привязано к устройству через его MAC, не к текущему
 // IP). Кэшируется, пока запросы к Arylic проходят успешно — перерезолвливается заново
-// только если pollArylicMetadata() получит отказ (см. ниже invalidateArylicIp()), а не
-// на каждый опрос: сам mDNS-запрос — блокирующий (см. MDNS.queryHost()), незачем платить
-// эту цену каждые ARYLIC_POLL_INTERVAL_MS, когда IP скорее всего не менялся
+// только если опрос получит отказ, а не на каждый опрос: сам mDNS-запрос — блокирующий
+// (см. MDNS.queryHost()), незачем платить эту цену каждые ARYLIC_POLL_INTERVAL_MS, когда
+// IP скорее всего не менялся
 static IPAddress arylicIp;
 static bool arylicIpKnown = false;
 static bool reachable = false;
@@ -35,24 +58,22 @@ static char trackArtUrl[160] = "";
 static char trackSourceName[24] = "";
 static int currentVolume = -1;
 
-bool arylicTrackIsPlaying() { return trackPlaying; }
-String arylicTrackText() { return String(trackText); }
-long arylicTrackPosMs() { return trackPosMs; }
-long arylicTrackLenMs() { return trackLenMs; }
-unsigned long arylicTrackAgeMs() { return millis() - trackCaptureMillis; }
-String arylicTrackArtUrl() { return String(trackArtUrl); }
-String arylicTrackSourceName() { return String(trackSourceName); }
-int arylicCurrentVolume() { return currentVolume; }
-
-static void invalidateArylicIp() {
-  arylicIpKnown = false;
-}
+bool arylicTrackIsPlaying() { MutexGuard g(stateMutex); return trackPlaying; }
+String arylicTrackText() { MutexGuard g(stateMutex); return String(trackText); }
+long arylicTrackPosMs() { MutexGuard g(stateMutex); return trackPosMs; }
+long arylicTrackLenMs() { MutexGuard g(stateMutex); return trackLenMs; }
+unsigned long arylicTrackAgeMs() { MutexGuard g(stateMutex); return millis() - trackCaptureMillis; }
+String arylicTrackArtUrl() { MutexGuard g(stateMutex); return String(trackArtUrl); }
+String arylicTrackSourceName() { MutexGuard g(stateMutex); return String(trackSourceName); }
+int arylicCurrentVolume() { MutexGuard g(stateMutex); return currentVolume; }
 
 bool arylicIsReachable() {
+  MutexGuard g(stateMutex);
   return reachable;
 }
 
 String arylicCurrentIp() {
+  MutexGuard g(stateMutex);
   if (manualIpSet) {
     return manualIp.toString();
   }
@@ -64,8 +85,11 @@ String arylicCurrentIp() {
 
 void setArylicIpOverride(const char* ip) {
   if (ip[0] == '\0') {
-    manualIpSet = false;
-    invalidateArylicIp(); // на следующем опросе снова резолвим через mDNS с чистого листа
+    {
+      MutexGuard g(stateMutex);
+      manualIpSet = false;
+      arylicIpKnown = false; // на следующем опросе снова резолвим через mDNS с чистого листа
+    }
     Serial.println("[arylic] ручной IP снят, возвращаюсь к mDNS");
     return;
   }
@@ -75,34 +99,56 @@ void setArylicIpOverride(const char* ip) {
     Serial.println(ip);
     return;
   }
-  manualIp = parsed;
-  manualIpSet = true;
+  {
+    MutexGuard g(stateMutex);
+    manualIp = parsed;
+    manualIpSet = true;
+  }
   Serial.print("[arylic] IP задан вручную: ");
-  Serial.println(manualIp);
+  Serial.println(parsed);
 }
 
+// Читает manualIp/arylicIpKnown/arylicIp под локом (быстро), но сам mDNS-запрос (до 2с
+// блокировки) — вне лока: это единственная функция, которую параллельно дёргают и фоновая
+// задача опроса, и обработчики /playback, /volume (arylicSendPlayerCommand()/arylicSetVolume()
+// шлют команды из основного loop()) — если бы mDNS-запрос шёл под локом, кнопка Play/Pause
+// могла бы зависнуть на те же 2с, ровно то, чего мы стараемся избежать
 static IPAddress resolveArylicIp() {
-  if (manualIpSet) {
-    return manualIp;
+  bool manual, known;
+  IPAddress manualCopy, cachedCopy;
+  {
+    MutexGuard g(stateMutex);
+    manual = manualIpSet;
+    manualCopy = manualIp;
+    known = arylicIpKnown;
+    cachedCopy = arylicIp;
   }
-  if (arylicIpKnown) {
-    return arylicIp;
+  if (manual) {
+    return manualCopy;
   }
+  if (known) {
+    return cachedCopy;
+  }
+
   IPAddress resolved = MDNS.queryHost(ARYLIC_MDNS_HOSTNAME, 2000);
+  IPAddress newIp;
   if (resolved != IPAddress((uint32_t)0)) {
-    arylicIp = resolved;
-    arylicIpKnown = true;
+    newIp = resolved;
     Serial.print("[arylic] mDNS: ");
     Serial.print(ARYLIC_MDNS_HOSTNAME);
     Serial.print(".local -> ");
-    Serial.println(arylicIp);
+    Serial.println(newIp);
   } else {
-    arylicIp = IPAddress(ARYLIC_IP_OCTETS);
-    arylicIpKnown = true; // не долбим mDNS каждый опрос и на фолбэке — тоже до следующего сбоя
+    newIp = IPAddress(ARYLIC_IP_OCTETS);
     Serial.print("[arylic] mDNS-резолв не удался, использую статический IP из config.h: ");
-    Serial.println(arylicIp);
+    Serial.println(newIp);
   }
-  return arylicIp;
+  {
+    MutexGuard g(stateMutex);
+    arylicIp = newIp;
+    arylicIpKnown = true; // не долбим mDNS каждый опрос и на фолбэке — тоже до следующего сбоя
+  }
+  return newIp;
 }
 
 static String arylicUrl() {
@@ -113,11 +159,16 @@ static String arylicUrl() {
 }
 
 // Общий отправитель команд управления (play/pause/next/prev/volume) — один запрос,
-// без ожидания ответа с данными (Arylic отвечает просто "OK"). Отдельная от
-// pollArylicMetadata() функция и HTTPClient-инстанс — эта вызывается по действию
-// пользователя на веб-странице, не по таймеру опроса
+// без ожидания ответа с данными (Arylic отвечает просто "OK"). Вызывается по действию
+// пользователя на веб-странице (handlePlayback()/handleVolume() в web_control.cpp), не по
+// таймеру опроса, всегда из основного loop()-потока — static здесь безопасен без мьютекса.
+// Лог connected()-до-запроса — чтобы по факту (не гадая) увидеть, реально ли Arylic держит
+// соединение живым между кликами, или каждый раз всё равно платим за хендшейк заново
 static bool sendArylicCommand(const String& command) {
-  WiFiClientSecure client;
+  static WiFiClientSecure client;
+  bool wasConnected = client.connected();
+  Serial.print("[arylic] команда, соединение ");
+  Serial.println(wasConnected ? "переиспользовано" : "новое (хендшейк)");
   client.setInsecure();
 
   HTTPClient http;
@@ -127,7 +178,10 @@ static bool sendArylicCommand(const String& command) {
   url += "/httpapi.asp?command=";
   url += command;
   http.begin(client, url);
+  unsigned long start = millis();
   int httpCode = http.GET();
+  Serial.print("[arylic] команда заняла мс: ");
+  Serial.println(millis() - start);
   String resp = http.getString();
   http.end();
   return httpCode == HTTP_CODE_OK && resp == "OK";
@@ -141,6 +195,11 @@ bool arylicSetVolume(int percent) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   return sendArylicCommand(String("setPlayerCmd:vol:") + percent);
+}
+
+bool arylicSeek(long posMs) {
+  if (posMs < 0) posMs = 0;
+  return sendArylicCommand(String("setPlayerCmd:seek:") + (posMs / 1000));
 }
 
 static int hexNibble(char c) {
@@ -206,7 +265,11 @@ static void extractStringField(const String& payload, const char* key, char* out
 // устройство (там нет кода 31, который мы видим live для Spotify Connect) — поэтому здесь
 // только те коды, что подтверждены живьём или взяты из документации как стабильные общие
 // случаи, никаких догадок
-static void computeSourceName(const String& payload) {
+//
+// Пишет в переданный буфер, а не прямо в trackSourceName — эта функция вызывается из фоновой
+// задачи опроса ДО того, как результат публикуется под локом (см. pollArylicMetadataOnce()),
+// чтобы не держать mutex на всё время разбора строки
+static void computeSourceName(const String& payload, char* out, size_t outMax) {
   char vendor[48];
   extractStringField(payload, "\"vendor\":\"", vendor, sizeof(vendor));
   if (vendor[0] != '\0') {
@@ -215,18 +278,18 @@ static void computeSourceName(const String& payload) {
       *colon = '\0';
     }
     if (strcasecmp(vendor, "spotify") == 0) {
-      strcpy(trackSourceName, "Spotify");
+      snprintf(out, outMax, "Spotify");
     } else if (strcasecmp(vendor, "tidal") == 0) {
-      strcpy(trackSourceName, "Tidal");
+      snprintf(out, outMax, "Tidal");
     } else if (strcasecmp(vendor, "deezer") == 0) {
-      strcpy(trackSourceName, "Deezer");
+      snprintf(out, outMax, "Deezer");
     } else if (strcasecmp(vendor, "qobuz") == 0) {
-      strcpy(trackSourceName, "Qobuz");
+      snprintf(out, outMax, "Qobuz");
     } else if (strcasecmp(vendor, "amazon") == 0) {
-      strcpy(trackSourceName, "Amazon Music");
+      snprintf(out, outMax, "Amazon Music");
     } else {
-      snprintf(trackSourceName, sizeof(trackSourceName), "%s", vendor);
-      trackSourceName[0] = toupper(trackSourceName[0]);
+      snprintf(out, outMax, "%s", vendor);
+      out[0] = toupper(out[0]);
     }
     return;
   }
@@ -234,17 +297,17 @@ static void computeSourceName(const String& payload) {
   char mode[8];
   extractStringField(payload, "\"mode\":\"", mode, sizeof(mode));
   if (strcmp(mode, "1") == 0) {
-    strcpy(trackSourceName, "AirPlay"); // подтверждено live 2026-09-12
+    snprintf(out, outMax, "AirPlay"); // подтверждено live 2026-09-12
   } else if (strcmp(mode, "2") == 0) {
-    strcpy(trackSourceName, "DLNA");
+    snprintf(out, outMax, "DLNA");
   } else if (strcmp(mode, "40") == 0) {
-    strcpy(trackSourceName, "Line-In");
+    snprintf(out, outMax, "Line-In");
   } else if (strcmp(mode, "41") == 0) {
-    strcpy(trackSourceName, "Bluetooth");
+    snprintf(out, outMax, "Bluetooth");
   } else if (strcmp(mode, "43") == 0) {
-    strcpy(trackSourceName, "Optical");
+    snprintf(out, outMax, "Optical");
   } else {
-    trackSourceName[0] = '\0'; // неизвестный код — не гадаем, лучше пусто
+    out[0] = '\0'; // неизвестный код — не гадаем, лучше пусто
   }
 }
 
@@ -323,97 +386,142 @@ static void pollArylicAlbumArt(const IPAddress& ip) {
   int httpCode = http.POST((uint8_t*)soapBody, strlen(soapBody));
   if (httpCode != HTTP_CODE_OK) {
     http.end();
+    MutexGuard g(stateMutex);
     trackArtUrl[0] = '\0';
     return;
   }
   String payload = http.getString();
   http.end();
 
-  extractEscapedXmlTag(payload, "albumArtURI", trackArtUrl, sizeof(trackArtUrl));
+  // Разбор — в локальный буфер, без лока (строковые операции, не общее состояние);
+  // публикуем в trackArtUrl одним быстрым memcpy под локом ниже
+  char newArt[sizeof(trackArtUrl)];
+  extractEscapedXmlTag(payload, "albumArtURI", newArt, sizeof(newArt));
   // AirPlay/Apple Music отдаёт буквально строку "un_known" вместо ссылки (проверено live,
   // см. project_arylic_airplay_no_metadata в памяти) — это не URL, прятать как отсутствие
-  if (strcmp(trackArtUrl, "un_known") == 0) {
-    trackArtUrl[0] = '\0';
+  if (strcmp(newArt, "un_known") == 0) {
+    newArt[0] = '\0';
   }
+
+  MutexGuard g(stateMutex);
+  memcpy(trackArtUrl, newArt, sizeof(trackArtUrl));
 }
 
-void pollArylicMetadata() {
-  static unsigned long lastPoll = 0;
-  if (!wifiIsConnected() || millis() - lastPoll < ARYLIC_POLL_INTERVAL_MS) {
-    return;
-  }
-  lastPoll = millis();
-
-  WiFiClientSecure client;
+// Одна итерация опроса — сетевой вызов идёт на своём static-клиенте (не общем с командами,
+// см. комментарий выше), публикация результата в общее состояние — короткими блоками под
+// stateMutex. Раньше это было pollArylicMetadata(), вызывавшаяся прямо из loop() (см.
+// arylicMetadataBegin() ниже за тем, почему теперь она крутится в отдельной задаче)
+static void pollArylicMetadataOnce() {
+  // static — не локальная переменная: эта функция всегда вызывается из одной и той же фоновой
+  // задачи (arylicPollTask), конкурентного доступа нет, мьютекс не нужен. Даже если Arylic не
+  // держит соединение между опросами (см. лог connected() в sendArylicCommand() — по нему
+  // будет видно), не хуже локальной переменной, а если вдруг держит — бесплатный выигрыш
+  static WiFiClientSecure client;
   client.setInsecure(); // самоподписанный сертификат Arylic — цепочку не проверяем
 
   HTTPClient http;
   http.setTimeout(2000); // локальная сеть — секунды с запасом на "не отвечает/выключен"
   http.begin(client, arylicUrl());
   int httpCode = http.GET();
+  String payload;
+  if (httpCode == HTTP_CODE_OK) {
+    payload = http.getString();
+  }
+  http.end();
 
   if (httpCode != HTTP_CODE_OK) {
+    bool wasReachable;
+    {
+      MutexGuard g(stateMutex);
+      wasReachable = reachable;
+      reachable = false;
+      trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
+      trackArtUrl[0] = '\0';
+      trackSourceName[0] = '\0';
+      trackText[0] = '\0'; // устройство недоступно целиком — не оставлять на веб-странице
+      // текст/обложку ПРЕДЫДУЩЕГО трека (в отличие от паузы ниже, где это сделано намеренно)
+      currentVolume = -1;
+      // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново.
+      // Ручной override (manualIpSet) это не затрагивает — см. resolveArylicIp()
+      arylicIpKnown = false;
+    }
+    if (wasReachable) {
+      Serial.println("[arylic] связь потеряна, не слышу Arylic");
+    }
     Serial.print("[arylic] запрос не удался, код: ");
     Serial.println(httpCode);
-    http.end();
-    reachable = false;
-    trackPlaying = false; // Та же логика, что и для Mega ниже — не знаем, играет ли, считаем что нет
-    trackArtUrl[0] = '\0';
-    trackSourceName[0] = '\0';
-    currentVolume = -1;
     megaLinkSendArylicStatus(false);
     // Не знаем, играет ли Arylic на самом деле, раз до него не достучаться — безопаснее
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
     // навсегда, если Arylic пропал из сети посреди воспроизведения)
     megaLinkSendPlayState(false);
-    // Возможно IP сменился (новый DHCP-лиз) — на следующем опросе резолвим mDNS-имя заново.
-    // Ручной override (manualIpSet) это не затрагивает — см. resolveArylicIp()
-    invalidateArylicIp();
     return;
   }
-  reachable = true;
-  megaLinkSendArylicStatus(true);
 
-  String payload = http.getString();
-  http.end();
+  bool wasReachable;
+  {
+    MutexGuard g(stateMutex);
+    wasReachable = reachable;
+    reachable = true;
+  }
+  if (!wasReachable) {
+    Serial.print("[arylic] слышу Arylic, ");
+    Serial.println(arylicUrl());
+  }
+  megaLinkSendArylicStatus(true);
 
   // Громкость усилителя — актуальна независимо от того, играет ли что-то сейчас (в отличие
   // от curpos/totlen/title ниже), поэтому обновляется тут, а не внутри блока playing
-  currentVolume = (int)extractLongField(payload, "\"vol\":\"");
+  int newVolume = (int)extractLongField(payload, "\"vol\":\"");
 
   bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
   megaLinkSendPlayState(playing);
-  trackPlaying = playing;
   if (!playing) {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
-    // что нужно для выхода из Now Playing/возврата предыдущего Source
-    trackArtUrl[0] = '\0';
-    trackSourceName[0] = '\0';
+    // что нужно для выхода из Now Playing/возврата предыдущего Source. Обложку/источник НЕ
+    // чистим (в отличие от ветки "устройство недоступно" выше) — на паузе трек всё ещё тот
+    // же самый, веб-странице незачем моргать пустой обложкой; она сама уберётся, как только
+    // придут новые данные (следующий трек или реальное disconnect от Arylic)
+    MutexGuard g(stateMutex);
+    currentVolume = newVolume;
+    trackPlaying = false;
     return;
   }
 
   // curpos/totlen обновляем независимо от того, распарсятся ли Title/Artist ниже —
   // это отдельные поля того же ответа, прогресс-бар веб-страницы не должен зависеть
   // от успеха разбора текста трека
-  trackPosMs = extractLongField(payload, "\"curpos\":\"");
-  trackLenMs = extractLongField(payload, "\"totlen\":\"");
-  trackCaptureMillis = millis();
-  megaLinkSendPosition(trackPosMs, trackLenMs);
+  long newPosMs = extractLongField(payload, "\"curpos\":\"");
+  long newLenMs = extractLongField(payload, "\"totlen\":\"");
+  megaLinkSendPosition(newPosMs, newLenMs);
 
   // Обложка — отдельный запрос (другой порт/протокол, см. pollArylicAlbumArt) — вызываем
-  // только пока реально играет, тем же принципом, что и curpos/totlen выше
+  // только пока реально играет, тем же принципом, что и curpos/totlen выше. Сама публикует
+  // trackArtUrl под локом
   pollArylicAlbumArt(resolveArylicIp());
 
   // Источник (Spotify/AirPlay/...) — тоже независимо от того, распарсятся ли Title/Artist
   // ниже: AirPlay на этом устройстве не отдаёт их вообще (см. computeSourceName), но само
   // название источника получить можно всегда
-  computeSourceName(payload);
-  megaLinkSendSource(trackSourceName);
+  char sourceBuf[24];
+  computeSourceName(payload, sourceBuf, sizeof(sourceBuf));
+  megaLinkSendSource(sourceBuf);
 
   char title[32];
   char artist[32];
   extractHexField(payload, "\"Title\":\"", title, sizeof(title));
   extractHexField(payload, "\"Artist\":\"", artist, sizeof(artist));
+
+  {
+    MutexGuard g(stateMutex);
+    currentVolume = newVolume;
+    trackPlaying = true;
+    trackPosMs = newPosMs;
+    trackLenMs = newLenMs;
+    trackCaptureMillis = millis();
+    strncpy(trackSourceName, sourceBuf, sizeof(trackSourceName) - 1);
+    trackSourceName[sizeof(trackSourceName) - 1] = '\0';
+  }
 
   if (title[0] == '\0' && artist[0] == '\0') {
     Serial.println("[arylic] играет, но Title/Artist не найдены в ответе — сырой ответ:");
@@ -423,6 +531,7 @@ void pollArylicMetadata() {
     // AirPlay не отдаёт метадату вообще, ни у нас, ни в родном приложении производителя
     // (проверено live, см. project_arylic_airplay_no_metadata в памяти) — но название
     // источника уже отправлено выше (megaLinkSendSource), этого тут достаточно
+    MutexGuard g(stateMutex);
     trackText[0] = '\0';
     return;
   }
@@ -437,13 +546,50 @@ void pollArylicMetadata() {
   // Отдельная, более длинная копия для веб-страницы (см. trackText в arylic_metadata.h) —
   // combined уже обрезан до MEGA_LINK_META_MAX_LEN для Mega, так что заново форматируем
   // без этого ограничения, а не переиспользуем combined
-  if (artist[0] && title[0]) {
-    snprintf(trackText, sizeof(trackText), "%s - %s", artist, title);
-  } else {
-    snprintf(trackText, sizeof(trackText), "%s%s", artist, title);
+  {
+    MutexGuard g(stateMutex);
+    if (artist[0] && title[0]) {
+      snprintf(trackText, sizeof(trackText), "%s - %s", artist, title);
+    } else {
+      snprintf(trackText, sizeof(trackText), "%s%s", artist, title);
+    }
   }
 
   megaLinkSendMetadata(combined);
   Serial.print("[arylic] ");
   Serial.println(combined);
+}
+
+// Фоновая задача — крутится на ядре 0 (вместе со стеком Wi-Fi/lwIP, обычная практика для
+// сетевых задач на ESP32), пока loop() с веб-сервером остаётся на ядре 1 и ничем не блокируется
+// этим опросом. Пауза ARYLIC_POLL_INTERVAL_MS — ПОСЛЕ каждой попытки, а не по жёсткому
+// расписанию: если сам запрос завис на таймауте (до 2с), не долбим повторно сразу же следом
+//
+// Периодически логируем свободную кучу (ESP.getFreeHeap()) — до этого рефакторинга опрос жил
+// в общем loop()-стеке и устройство периодически само перезагружалось (SW_CPU_RESET), похоже
+// на нехватку стека/фрагментацию кучи от частых TLS-хендшейков (WiFiClientSecure без
+// keep-alive, новый handshake на каждый опрос). Если проблема в утечке — здесь будет видно
+// падающий тренд задолго до самого краша; если после переноса на отдельную задачу с большим
+// стеком (см. stackSize ниже) крах повторится — по этому логу плюс дампу паники (Guru
+// Meditation/Backtrace, печатается автоматически) можно будет отличить утечку от разового сбоя
+static void arylicPollTask(void* /*param*/) {
+  uint32_t iteration = 0;
+  for (;;) {
+    if (wifiIsConnected()) {
+      pollArylicMetadataOnce();
+    }
+    if (++iteration % 20 == 0) { // примерно раз в 10с при ARYLIC_POLL_INTERVAL_MS=500
+      Serial.print("[arylic] свободная куча: ");
+      Serial.println(ESP.getFreeHeap());
+    }
+    vTaskDelay(pdMS_TO_TICKS(ARYLIC_POLL_INTERVAL_MS));
+  }
+}
+
+void arylicMetadataBegin() {
+  stateMutex = xSemaphoreCreateMutex();
+  // 12288 вместо дефолтных 8192 — TLS-хендшейк (mbedTLS) внутри HTTPClient/WiFiClientSecure
+  // требователен к стеку, а перезагрузки на предыдущей версии (опрос прямо в loop(), общий
+  // стек с веб-сервером) похожи на нехватку именно этого
+  xTaskCreatePinnedToCore(arylicPollTask, "arylic_poll", 12288, nullptr, 1, nullptr, 0);
 }

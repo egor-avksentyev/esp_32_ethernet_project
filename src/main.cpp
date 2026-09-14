@@ -21,6 +21,7 @@ void setup() {
     // Имя "esp32-audio-webctl" ни на что не влияет, обязателен сам факт вызова begin()
     MDNS.begin("esp32-audio-webctl");
     webControlBegin();
+    arylicMetadataBegin();
   } else {
     // Сохранённой сети нет или она не отвечает (например устройство перенесли в другой дом) —
     // вместо обычной работы поднимаем AP-режим настройки, см. wifi_provisioning.h
@@ -36,5 +37,4 @@ void loop() {
   }
   wifiSetupMaintain();
   webControlPoll();
-  pollArylicMetadata();
 }

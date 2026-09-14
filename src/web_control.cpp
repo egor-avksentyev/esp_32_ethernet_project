@@ -4,6 +4,7 @@
 #include "wifi_setup.h"
 #include "arylic_metadata.h"
 #include <WebServer.h>
+#include <WiFi.h>
 
 static WebServer server(WEB_SERVER_PORT);
 
@@ -31,14 +32,33 @@ static const char PAGE_HTML[] PROGMEM =
   "<meta name=viewport content='width=device-width,initial-scale=1'>"
   "<title>Control</title><style>"
   "body{font-family:sans-serif;text-align:center;background:#111;color:#eee}"
-  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;background:#333;color:#eee}"
+  // touch-action:manipulation — убирает задержку/жест двойного тапа-зума на мобильных браузерах,
+  // из-за которой быстрый второй тап по кнопке мог не долетать до click вообще (актуально для
+  // playerCmd() — двойной клик на "назад" должен реально дойти как два отдельных клика)
+  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;background:#333;color:#eee;touch-action:manipulation}"
   "button:active{background:#555}"
+  "button:disabled{opacity:.5}"
+  // Класс, не атрибут disabled — на реально disabled-кнопке браузер вообще не диспетчеризует
+  // click, а второй клик двойного клика должен ДОЙТИ до JS и встать в playerCmdQueued (см.
+  // playerCmd() ниже), просто визуально "притушенным" на время запроса
+  "button.pending{opacity:.5}"
   "#status{margin:12px;font-size:1.1em;color:#8cf}"
   "</style></head><body>"
-  "<div style='font-size:.85em;color:#aaa;margin-top:6px'>"
-  "<span id=dtClock>--:--:--</span> &middot; <span id=dtDate></span>"
-  "<div id=weatherInfo style='margin-top:2px;color:#8cf'></div></div>"
-  "<h2>Bass/High/Volume</h2>"
+  // flex+justify-content:flex-end вместо position:absolute — остаётся в потоке документа, так
+  // заголовок ниже сам сдвинется, не нужно вручную резервировать место под этот блок (а на
+  // мобильной ширине блок бы точно съезжал по высоте из-за переноса строк). max-width — чтобы
+  // при длинном названии города блок не растягивался на всю ширину экрана, а переносился внутри
+  // своих 65%, оставаясь прижатым к правому краю
+  "<div style='display:flex;justify-content:flex-end;padding:6px 10px 0'>"
+  "<div style='text-align:right;max-width:65%'>"
+  "<span id=dtClock style='font-size:.85em;color:#aaa'>--:--:--</span>"
+  "<span style='font-size:.85em;color:#aaa'> &middot; </span>"
+  "<span id=dtDate style='font-size:.85em;color:#aaa'></span>"
+  "<div id=weatherInfo style='margin-top:4px'>"
+  "<span id=weatherIcon style='font-size:1.8em;vertical-align:middle'></span> "
+  "<span id=weatherText style='font-size:1.15em;color:#8cf;vertical-align:middle'></span>"
+  "</div></div></div>"
+  "<h2>Preamp Remote Control</h2>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
   "<button onclick=cmd('enter')>OK</button>"
@@ -53,21 +73,32 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onclick=cmd('set')>Source</button>"
   "<button onclick=cmd('power')>Power</button></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
-  "<img id=trackArt style='display:none;max-width:120px;border-radius:6px;margin-bottom:6px'>"
+  "<img id=trackArt style='display:none;max-width:240px;border-radius:6px;margin:0 auto 6px'>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
-  "<div id=trackTitle style='font-size:.95em;color:#ccc;margin-bottom:4px'></div>"
+  "<div id=trackTitle style='font-size:2.1em;color:#ccc;margin-bottom:4px'></div>"
   "<div id=trackProgress>"
-  "<div style='background:#333;border-radius:6px;height:8px;overflow:hidden'>"
-  "<div id=trackBar style='background:#8cf;height:100%;width:0%'></div></div>"
+  // type=range вместо статичного div-бара — можно тащить пальцем/мышью, чтобы перемотать
+  // (см. seekTrack() ниже). max в мс, обновляется на каждом опросе под фактическую длину трека.
+  // touch-action:none — без него мобильный браузер на тонком слайдере может принять драг за
+  // жест вертикального скролла страницы и не давать сдвинуть ползунок пальцем вообще (мышью
+  // на десктопе этой проблемы нет, там всё, что не button/link, скроллу не мешает)
+  // ontouchmove продублирован рядом с oninput не просто так: на части мобильных браузеров
+  // (замечено live) сам ползунок при драге пальцем двигается нативно, а вот JS-событие
+  // "input" во время движения либо не стреляет вообще, либо сильно троттлится — счётчик
+  // застывал, хотя визуально палец уже сдвинул ползунок. touchmove не зависит от этого багa
+  "<input id=trackSeek type=range min=0 max=1000 value=0 "
+  "style='width:70%;accent-color:#8cf;touch-action:none' "
+  "oninput=previewSeek(this.value) ontouchmove=previewSeek(this.value) "
+  "onchange=seekTrack(this.value)>"
   "<div style='font-size:.8em;color:#888;margin-top:2px'>"
   "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div>"
   "</div></div>"
   "<div id=playbackWrap style='margin-top:10px;display:none'>"
-  "<button onclick=playerCmd('prev')>&laquo;</button>"
-  "<button onclick=playerCmd('onepause')>Play/Pause</button>"
-  "<button onclick=playerCmd('next')>&raquo;</button>"
+  "<button class=playerBtn onclick=playerCmd('prev',this)>&laquo;</button>"
+  "<button class=playerBtn onclick=playerCmd('onepause',this)>Play/Pause</button>"
+  "<button class=playerBtn onclick=playerCmd('next',this)>&raquo;</button>"
   "<div style='margin-top:8px'>"
-  "<input id=volSlider type=range min=0 max=100 value=50 style='width:70%' "
+  "<input id=volSlider type=range min=0 max=100 value=50 style='width:18%;touch-action:none' "
   "oninput='volDragging=true' onchange=setVolume(this.value)>"
   "</div></div>"
   "<div style='margin-top:14px'>"
@@ -98,28 +129,63 @@ static const char PAGE_HTML[] PROGMEM =
   // к j.playing (трек может быть на паузе, громкость и play всё равно нужны)
   "document.getElementById('playbackWrap').style.display=ok?'block':'none'"
   "})}"
-  "setInterval(pollArylic,3000);pollArylic();"
+  "setInterval(pollArylic,500);pollArylic();"
   // play/pause через "onepause" — сам переключает состояние, не полагаясь на то, что
-  // getPlayerStatus считает текущим (это поле неточное для AirPlay, см. arylic_metadata.h)
-  "function playerCmd(a){fetch('/playback?action='+a)}"
+  // getPlayerStatus считает текущим (это поле неточное для AirPlay, см. arylic_metadata.h).
+  // TLS-хендшейк ESP32 -> Arylic на команду занимает ~1.5-2с (замечено live, соединение не
+  // держится между кликами) — без визуального отклика кажется, что кнопка не сработала.
+  // Двойной клик на "назад" — рабочий сценарий (у Arylic одно "prev" перематывает текущий
+  // трек на начало, а второе подряд реально переключает на предыдущий, как на физическом
+  // пульте) — поэтому второй клик, пришедшийся на занятое окно, не отбрасывается, а встаёт в
+  // playerCmdQueued и уходит сразу же, как только освободится canal (см. .finally() ниже).
+  // Больше одного в очереди не копим — новый клик поверх уже стоящего в очереди просто
+  // заменяет его (не нужно копить длинную очередь одинаковых нажатий)
+  "let playerCmdBusy=false,playerCmdQueued=null;"
+  "function playerCmd(a,btn){"
+  "if(playerCmdBusy){playerCmdQueued={a,btn};return}"
+  "playerCmdBusy=true;"
+  "let all=document.querySelectorAll('.playerBtn');"
+  "all.forEach(b=>b.classList.add('pending'));"
+  "let orig=btn.innerHTML;btn.innerHTML='&hellip;';"
+  "fetch('/playback?action='+a).finally(()=>{"
+  "playerCmdBusy=false;all.forEach(b=>b.classList.remove('pending'));btn.innerHTML=orig;"
+  "if(playerCmdQueued){let q=playerCmdQueued;playerCmdQueued=null;playerCmd(q.a,q.btn)}"
+  "})}"
   // volDragging блокирует перезапись ползунка живым опросом, пока палец/курсор ещё на нём —
   // без этого ползунок дёргался бы обратно к старому значению между отпусканием и applied-ответом
   "let volDragging=false;"
   "function setVolume(v){fetch('/volume?value='+v);setTimeout(()=>{volDragging=false},1000)}"
-  // Прогресс трека: /track опрашивается раз в 3с (как всё остальное), а между опросами
-  // позиция досчитывается локально по реальному прошедшему времени (Date.now()), чтобы
-  // полоска ехала плавно, а не прыгала раз в 3с — см. arylic_metadata.h за объяснением age
-  "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false;"
+  // Прогресс трека: /track опрашивается раз в ARYLIC_POLL_INTERVAL_MS (как всё остальное), а
+  // между опросами позиция досчитывается локально по реальному прошедшему времени (Date.now()),
+  // чтобы полоска ехала плавно, а не прыгала — см. arylic_metadata.h за объяснением age
+  "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false,trackSeekDragging=false;"
   "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
   "return m+':'+(s<10?'0':'')+s}"
+  // hasTrack — трек ли играет ПРЯМО СЕЙЧАС, или он просто на паузе (j.text/j.art остаются
+  // заполнены сервером и на паузе, см. arylic_metadata.cpp, ветка "не играет" — очищаются
+  // только когда Arylic реально пропал из сети, не на обычной паузе кнопкой Play/Pause).
+  // Поэтому обложку/заголовок/источник показываем по наличию данных, а не по j.playing —
+  // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
   "trackPlayingNow=j.playing;trackLen=j.len;trackPos=j.pos+j.age;trackFetchTime=Date.now();"
-  "document.getElementById('trackWrap').style.display=j.playing?'block':'none';"
-  "if(j.playing)document.getElementById('trackTitle').innerText=j.text;"
+  "let hasTrack=j.playing||j.text||j.art;"
+  "document.getElementById('trackWrap').style.display=hasTrack?'block':'none';"
+  // AirPlay не отдаёт Title/Artist вообще (см. arylic_metadata.h) — j.text тогда всегда "".
+  // Название трека тут не показываем совсем (источник и так виден отдельной строкой,
+  // #trackSource, ниже) — просто прячем заголовок, а не подставляем туда что-то ещё
+  "let t=document.getElementById('trackTitle');"
+  "if(j.text){t.innerText=j.text;t.style.display='block'}else{t.style.display='none'}"
   // Источник (Spotify/AirPlay/...) — отдельная строка, показывается независимо от того,
   // распарсились ли title/artist (AirPlay их не отдаёт вообще, но источник знать можно)
+  // Крупно — когда title/artist нет вообще (AirPlay, trackTitle тогда скрыт выше): это
+  // единственный видимый текст "что сейчас играет". Размер задаём JS-ом напрямую в
+  // src.style, а не CSS-классом — у элемента уже есть встроенный style='font-size:...'
+  // (задаёт БАЗОВЫЙ маленький размер), а инлайновый style всегда перебивает правило класса
+  // из <style>, так что class.toggle тут ни на что не влиял
   "let src=document.getElementById('trackSource');"
-  "if(j.playing&&j.source){src.innerText=j.source;src.style.display='block'}"
+  "if(j.source){src.innerText=j.source;src.style.display='block';"
+  "src.style.fontSize=j.text?'.8em':'2.1em';"
+  "src.style.fontWeight=j.text?'normal':'bold'}"
   "else{src.style.display='none'}"
   // Позиция трека для AirPlay не двигается вообще (устройство её не отдаёт ни в одном
   // известном API, проверено live — см. arylic_metadata.h) — полоска бы просто застыла на
@@ -128,15 +194,25 @@ static const char PAGE_HTML[] PROGMEM =
   // Обложка отдаётся ссылкой на CDN сервиса-источника, не байтами — сам img её и грузит.
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h)
   "let art=document.getElementById('trackArt');"
-  "if(j.playing&&j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
+  "if(j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
   "else{art.style.display='none'}"
   "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
-  "function tickTrack(){if(!trackPlayingNow)return;"
+  "function tickTrack(){"
+  "document.getElementById('trackSeek').max=trackLen;"
+  "if(!trackPlayingNow||trackSeekDragging)return;"
   "let pos=trackPos+(Date.now()-trackFetchTime);if(trackLen>0&&pos>trackLen)pos=trackLen;"
   "document.getElementById('trackCur').innerText=fmtTime(pos);"
   "document.getElementById('trackLen').innerText=fmtTime(trackLen);"
-  "document.getElementById('trackBar').style.width=(trackLen>0?(100*pos/trackLen):0)+'%'}"
-  "setInterval(pollTrack,3000);pollTrack();setInterval(tickTrack,500);"
+  "document.getElementById('trackSeek').value=pos}"
+  // Пока тащишь ползунок — trackCur показывает время ПОД ползунком (куда попадёшь), не
+  // застывшее время последнего опроса. tickTrack() выше не трогает trackCur, пока
+  // trackSeekDragging — иначе эти два обновления дрались бы друг с другом
+  "function previewSeek(v){trackSeekDragging=true;document.getElementById('trackCur').innerText=fmtTime(v)}"
+  // Отпустили ползунок — шлём перемотку и на ~2с (хендшейк до Arylic, см. sendArylicCommand())
+  // замораживаем живое обновление, чтобы ползунок не дёргался обратно к старому значению,
+  // пока команда ещё не применилась — тот же приём, что и у setVolume() выше
+  "function seekTrack(v){fetch('/seek?pos='+v);setTimeout(()=>{trackSeekDragging=false},2000)}"
+  "setInterval(pollTrack,500);pollTrack();setInterval(tickTrack,500);"
   // Дата/время — часы самого браузера, без сети (страница отдаётся по обычному HTTP, а
   // navigator.geolocation в незащищённом контексте браузеры всё равно не дают использовать —
   // поэтому геолокация ниже не через GPS, а по IP через сторонние публичные API)
@@ -154,6 +230,14 @@ static const char PAGE_HTML[] PROGMEM =
   "67:'Ледяной дождь',71:'Снег',73:'Снег',75:'Сильный снег',77:'Снежная крупа',"
   "80:'Ливень',81:'Ливень',82:'Сильный ливень',85:'Снегопад',86:'Снегопад',"
   "95:'Гроза',96:'Гроза с градом',99:'Гроза с градом'};"
+  // Иконка по тому же коду WMO — отдельная таблица, не завязана на текст описания
+  "const WEATHER_ICONS={0:'☀️',1:'☀️',2:'⛅',3:'☁️',"
+  "45:'🌫️',48:'🌫️',51:'🌦️',53:'🌦️',"
+  "55:'🌦️',56:'🌨️',57:'🌨️',61:'🌧️',"
+  "63:'🌧️',65:'🌧️',66:'🌨️',67:'🌨️',"
+  "71:'🌨️',73:'🌨️',75:'🌨️',77:'🌨️',"
+  "80:'🌦️',81:'🌧️',82:'🌧️',85:'🌨️',"
+  "86:'🌨️',95:'⛈️',96:'⛈️',99:'⛈️'};"
   "function fetchLocation(){"
   "return fetch('https://ipwho.is/').then(r=>r.json()).then(loc=>{"
   "if(loc.success&&loc.latitude)return{lat:loc.latitude,lon:loc.longitude,city:loc.city};"
@@ -165,7 +249,8 @@ static const char PAGE_HTML[] PROGMEM =
   "fetch('https://api.open-meteo.com/v1/forecast?latitude='+loc.lat+'&longitude='+loc.lon"
   "+'&current_weather=true').then(r=>r.json()).then(w=>{"
   "let cw=w.current_weather;let desc=WEATHER_CODES[cw.weathercode]||'';"
-  "document.getElementById('weatherInfo').innerText="
+  "document.getElementById('weatherIcon').innerText=WEATHER_ICONS[cw.weathercode]||'';"
+  "document.getElementById('weatherText').innerText="
   "loc.city+': '+Math.round(cw.temperature)+'°C, '+desc}))"
   ".catch(()=>{})}"
   // Раз в 30 минут — погода не меняется поминутно, незачем дёргать сторонние сервисы чаще
@@ -284,7 +369,14 @@ static void handlePlayback() {
   String action = server.arg("action");
   for (uint8_t i = 0; i < PLAYBACK_ACTIONS_COUNT; i++) {
     if (action == PLAYBACK_ACTIONS[i]) {
-      arylicSendPlayerCommand(PLAYBACK_ACTIONS[i]);
+      // Пробрасываем реальный результат (arylicSendPlayerCommand() реально ходит на Arylic
+      // по HTTPS) — раньше ESP32 отвечал 204 независимо от исхода, и если Arylic был
+      // временно недоступен (mDNS/TLS сбой, см. arylic_metadata.cpp), команда молча
+      // терялась, а кнопка на веб-странице выглядела нажатой
+      if (!arylicSendPlayerCommand(PLAYBACK_ACTIONS[i])) {
+        server.send(502, "text/plain", "arylic unreachable");
+        return;
+      }
       server.send(204);
       return;
     }
@@ -299,7 +391,27 @@ static void handleVolume() {
     server.send(400, "text/plain", "no value");
     return;
   }
-  arylicSetVolume(server.arg("value").toInt());
+  if (!arylicSetVolume(server.arg("value").toInt())) {
+    server.send(502, "text/plain", "arylic unreachable");
+    return;
+  }
+  server.send(204);
+}
+
+// Перемотка (drag полосы прогресса на веб-странице, см. PAGE_HTML — trackSeek). pos — мс,
+// arylicSeek() сама переводит в секунды для команды LinkPlay. НЕ проверено живьём на этом
+// устройстве (см. комментарий у arylicSeek() в arylic_metadata.h) — если Arylic эту команду
+// не поддерживает, сюда просто придёт не-OK ответ и вернётся 502, как при любой другой
+// неудачной команде
+static void handleSeek() {
+  if (!server.hasArg("pos")) {
+    server.send(400, "text/plain", "no pos");
+    return;
+  }
+  if (!arylicSeek(server.arg("pos").toInt())) {
+    server.send(502, "text/plain", "arylic unreachable или не поддерживает seek");
+    return;
+  }
   server.send(204);
 }
 
@@ -324,8 +436,14 @@ void webControlBegin() {
   server.on("/track", handleTrack);
   server.on("/playback", handlePlayback);
   server.on("/volume", handleVolume);
+  server.on("/seek", handleSeek);
   server.onNotFound(handleNotFound);
   server.begin();
+
+  Serial.print("[web] веб-морда поднята, зайди на http://");
+  Serial.print(WiFi.localIP());
+  Serial.print(":");
+  Serial.println(WEB_SERVER_PORT);
 }
 
 void webControlPoll() {
