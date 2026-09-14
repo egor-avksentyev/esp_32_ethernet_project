@@ -68,6 +68,13 @@ static bool playOverrideActive = false;
 static bool playOverrideValue = false;
 static char playOverrideMode[8] = "";
 static char lastSeenMode[8] = "";
+// Дебаунс инвалидации по смене mode — требуем НЕСКОЛЬКО опросов подряд с другим mode, а не один
+// (см. применение в pollArylicMetadataOnce()): при опросе раз в ARYLIC_POLL_INTERVAL_MS (сейчас
+// 500мс) единичный "дребезг" в поле mode (если Arylic вдруг на миг отдаст что-то другое, не
+// меняя реального источника) иначе сразу сбрасывал бы оверрайд — реле откатывалось бы обратно
+// на (сломанный) "status" через долю секунды после того, как только что корректно среагировало
+static uint8_t modeChangeStreak = 0;
+#define PLAY_OVERRIDE_INVALIDATE_STREAK 3
 
 bool arylicTrackIsPlaying() { MutexGuard g(stateMutex); return trackPlaying; }
 String arylicTrackText() { MutexGuard g(stateMutex); return String(trackText); }
@@ -215,6 +222,18 @@ bool arylicSeek(long posMs) {
 
 void arylicNotifyOnepausePressed() {
   MutexGuard g(stateMutex);
+  // Оверрайд нужен ТОЛЬКО для AirPlay (mode "1") — там "status" подтверждённо не меняется на
+  // паузе (см. project_arylic_airplay_no_metadata в памяти). Для остальных источников (Spotify
+  // Connect и т.д.) "status" отражает реальность нормально — раньше оверрайд ставился
+  // безусловно для любого источника и оставался активным НАВСЕГДА, пока не сменится mode
+  // (см. инвалидацию ниже, в pollArylicMetadataOnce()): если нажать нашу же кнопку play/pause
+  // на Spotify "на всякий случай", оверрайд начинал подменять собой честный "status" и
+  // переставал замечать реальные изменения состояния, сделанные НЕ через эту кнопку (телефон,
+  // другое приложение) — реле переставало реагировать на них. Не только "не помогает" для
+  // надёжных источников, а активно вредит
+  if (strcmp(lastSeenMode, "1") != 0) {
+    return;
+  }
   bool currentBelief = playOverrideActive ? playOverrideValue : trackPlaying;
   playOverrideActive = true;
   playOverrideValue = !currentBelief;
@@ -506,8 +525,17 @@ static void pollArylicMetadataOnce() {
     lastSeenMode[sizeof(lastSeenMode) - 1] = '\0';
     if (playOverrideActive) {
       if (strcmp(currentMode, playOverrideMode) != 0) {
-        playOverrideActive = false; // сменился источник — старое предположение больше не в тему
+        // Не сбрасываем оверрайд по первому же несовпадению — см. PLAY_OVERRIDE_INVALIDATE_STREAK
+        // за тем, почему нужно подряд несколько опросов с другим mode, а не один
+        modeChangeStreak++;
+        if (modeChangeStreak >= PLAY_OVERRIDE_INVALIDATE_STREAK) {
+          playOverrideActive = false; // сменился источник — старое предположение больше не в тему
+          modeChangeStreak = 0;
+        } else {
+          playing = playOverrideValue; // ещё в пределах дебаунса — продолжаем доверять оверрайду
+        }
       } else {
+        modeChangeStreak = 0;
         playing = playOverrideValue;
       }
     }
