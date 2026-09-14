@@ -58,6 +58,17 @@ static char trackArtUrl[160] = "";
 static char trackSourceName[24] = "";
 static int currentVolume = -1;
 
+// Оптимистичный оверрайд play/pause собственной кнопкой (см. arylicNotifyOnepausePressed() в
+// arylic_metadata.h за подробным объяснением, почему это нужно и в чём ограничение) —
+// playOverrideMode запоминает "mode" на момент нажатия, чтобы понять, когда оверрайд больше
+// не в тему (сменился источник); lastSeenMode обновляется на каждом опросе, чтобы
+// arylicNotifyOnepausePressed() (вызывается из другого потока/контекста, не из опроса) знал
+// актуальный mode прямо в момент нажатия, а не ждал следующего опроса
+static bool playOverrideActive = false;
+static bool playOverrideValue = false;
+static char playOverrideMode[8] = "";
+static char lastSeenMode[8] = "";
+
 bool arylicTrackIsPlaying() { MutexGuard g(stateMutex); return trackPlaying; }
 String arylicTrackText() { MutexGuard g(stateMutex); return String(trackText); }
 long arylicTrackPosMs() { MutexGuard g(stateMutex); return trackPosMs; }
@@ -200,6 +211,15 @@ bool arylicSetVolume(int percent) {
 bool arylicSeek(long posMs) {
   if (posMs < 0) posMs = 0;
   return sendArylicCommand(String("setPlayerCmd:seek:") + (posMs / 1000));
+}
+
+void arylicNotifyOnepausePressed() {
+  MutexGuard g(stateMutex);
+  bool currentBelief = playOverrideActive ? playOverrideValue : trackPlaying;
+  playOverrideActive = true;
+  playOverrideValue = !currentBelief;
+  strncpy(playOverrideMode, lastSeenMode, sizeof(playOverrideMode) - 1);
+  playOverrideMode[sizeof(playOverrideMode) - 1] = '\0';
 }
 
 static int hexNibble(char c) {
@@ -475,6 +495,23 @@ static void pollArylicMetadataOnce() {
   int newVolume = (int)extractLongField(payload, "\"vol\":\"");
 
   bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
+  char currentMode[8];
+  extractStringField(payload, "\"mode\":\"", currentMode, sizeof(currentMode));
+  {
+    // "status" врёт для AirPlay (см. project_arylic_airplay_no_metadata в памяти) — если
+    // пользователь только что нажал нашу же кнопку play/pause (arylicNotifyOnepausePressed()),
+    // доверяем ЕЙ, а не этому полю, пока не сменится источник (mode)
+    MutexGuard g(stateMutex);
+    strncpy(lastSeenMode, currentMode, sizeof(lastSeenMode) - 1);
+    lastSeenMode[sizeof(lastSeenMode) - 1] = '\0';
+    if (playOverrideActive) {
+      if (strcmp(currentMode, playOverrideMode) != 0) {
+        playOverrideActive = false; // сменился источник — старое предположение больше не в тему
+      } else {
+        playing = playOverrideValue;
+      }
+    }
+  }
   megaLinkSendPlayState(playing);
   if (!playing) {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,

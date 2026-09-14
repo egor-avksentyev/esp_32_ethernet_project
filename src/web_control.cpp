@@ -86,9 +86,16 @@ static const char PAGE_HTML[] PROGMEM =
   // (замечено live) сам ползунок при драге пальцем двигается нативно, а вот JS-событие
   // "input" во время движения либо не стреляет вообще, либо сильно троттлится — счётчик
   // застывал, хотя визуально палец уже сдвинул ползунок. touchmove не зависит от этого багa
+  // pointerup вместо (или рядом с) "change" — на части мобильных браузеров "change" у range
+  // стреляет НЕСКОЛЬКО раз за одно перетаскивание, а не один раз в конце, из-за чего
+  // seekTrack() запускал несколько параллельных запросов, и самый ранний из них мог
+  // завершиться (сбросить trackSeekDragging) ПОСРЕДИ ещё не законченного драга. pointerup —
+  // один раз на весь жест (мышь/тач/перо — единый API), onchange оставлен только как фолбэк
+  // для клавиатуры (стрелки на сфокусированном range — там pointerup не будет вообще)
   "<input id=trackSeek type=range min=0 max=1000 value=0 "
   "style='width:70%;accent-color:#8cf;touch-action:none' "
   "oninput=previewSeek(this.value) ontouchmove=previewSeek(this.value) "
+  "onpointerdown='trackSeekDragging=true' onpointerup=seekTrack(this.value) "
   "onchange=seekTrack(this.value)>"
   "<div style='font-size:.8em;color:#888;margin-top:2px'>"
   "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div>"
@@ -167,7 +174,13 @@ static const char PAGE_HTML[] PROGMEM =
   // Поэтому обложку/заголовок/источник показываем по наличию данных, а не по j.playing —
   // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
-  "trackPlayingNow=j.playing;trackLen=j.len;trackPos=j.pos+j.age;trackFetchTime=Date.now();"
+  "trackPlayingNow=j.playing;trackLen=j.len;"
+  // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
+  // и эта строка каждые 500мс безусловно перезаписывала trackPos/trackFetchTime сырыми
+  // серверными данными, включая момент сразу после перемотки, пока Arylic/бэкграунд-опрос
+  // ещё не успели догнать новую позицию — отсюда и был откат назад независимо от устройства
+  // (десктоп/мобильный тут ни при чём, дело было именно в этом)
+  "if(!trackSeekDragging){trackPos=j.pos+j.age;trackFetchTime=Date.now()}"
   "let hasTrack=j.playing||j.text||j.art;"
   "document.getElementById('trackWrap').style.display=hasTrack?'block':'none';"
   // AirPlay не отдаёт Title/Artist вообще (см. arylic_metadata.h) — j.text тогда всегда "".
@@ -208,10 +221,34 @@ static const char PAGE_HTML[] PROGMEM =
   // застывшее время последнего опроса. tickTrack() выше не трогает trackCur, пока
   // trackSeekDragging — иначе эти два обновления дрались бы друг с другом
   "function previewSeek(v){trackSeekDragging=true;document.getElementById('trackCur').innerText=fmtTime(v)}"
-  // Отпустили ползунок — шлём перемотку и на ~2с (хендшейк до Arylic, см. sendArylicCommand())
-  // замораживаем живое обновление, чтобы ползунок не дёргался обратно к старому значению,
-  // пока команда ещё не применилась — тот же приём, что и у setVolume() выше
-  "function seekTrack(v){fetch('/seek?pos='+v);setTimeout(()=>{trackSeekDragging=false},2000)}"
+  // Отпустили ползунок — шлём перемотку и держим trackSeekDragging=true, пока запрос реально
+  // не завершится (.finally, не setTimeout с угаданной задержкой — раньше от него была
+  // отдельная гонка, если "change" стрелял больше одного раза за перетаскивание).
+  //
+  // trackPos/trackFetchTime обновляем ОПТИМИСТИЧНО, сразу же — до сих пор они хранили позицию
+  // из ПОСЛЕДНЕГО /track-опроса (ещё до перемотки), и как только trackSeekDragging становится
+  // false, tickTrack() тут же начинал интерполировать именно от неё — ползунок откатывался
+  // назад, пока следующий опрос (до 500мс) не подтягивал актуальную позицию с Arylic. Отсюда и
+  // были скачки "новое место -> старое -> новое": откат был реальный, просто короткий
+  //
+  // seekInFlight — у элемента теперь два обработчика на отпускание (onpointerdown/up и
+  // onchange, см. PAGE_HTML — второй как фолбэк для клавиатуры), на некоторых браузерах могут
+  // сработать оба почти одновременно. Без этой защиты каждый запускал бы свой fetch, и более
+  // ранний мог бы завершиться (сбросить trackSeekDragging) раньше более позднего — тот же
+  // класс гонки, что был с несколькими "change" за одно перетаскивание. Повторный вызов, пока
+  // запрос уже летит, просто обновляет оптимистичную позицию и не трогает fetch/dragging
+  "let seekInFlight=false;"
+  "function seekTrack(v){trackSeekDragging=true;trackPos=Number(v);trackFetchTime=Date.now();"
+  "if(seekInFlight)return;seekInFlight=true;"
+  "fetch('/seek?pos='+v).finally(()=>{seekInFlight=false;"
+  // Проверено live через curl: /seek подтверждается ЗА СЕБЯ (~1.7-2с TLS), но фоновый опрос
+  // Arylic на самом ESP32 (arylicPollTask, отдельный цикл раз в ARYLIC_POLL_INTERVAL_MS) в
+  // этот момент ещё не в курсе — реально нужно ЕЩЁ 1-2 таких цикла после ответа /seek, чтобы
+  // /track начал отдавать новую позицию. Если снять trackSeekDragging сразу по .finally(),
+  // ближайший /track ответ ещё вернёт СТАРУЮ позицию, и pollTrack() (защищённый выше) снова
+  // её применит, как только флаг снимется — ползунок откатится назад, а через ещё пару
+  // опросов снова прыгнет вперёд. Задержка ниже — запас на то, чтобы бэкенд сам догнал"
+  "setTimeout(()=>{trackSeekDragging=false},1500)})}"
   "setInterval(pollTrack,500);pollTrack();setInterval(tickTrack,500);"
   // Дата/время — часы самого браузера, без сети (страница отдаётся по обычному HTTP, а
   // navigator.geolocation в незащищённом контексте браузеры всё равно не дают использовать —
@@ -376,6 +413,12 @@ static void handlePlayback() {
       if (!arylicSendPlayerCommand(PLAYBACK_ACTIONS[i])) {
         server.send(502, "text/plain", "arylic unreachable");
         return;
+      }
+      if (action == "onepause") {
+        // Оптимистичный оверрайд PLAY:-состояния — см. arylicNotifyOnepausePressed() за тем,
+        // почему опрос сам по себе не может это заметить для AirPlay ("status" не меняется
+        // на паузе, проверено live)
+        arylicNotifyOnepausePressed();
       }
       server.send(204);
       return;
