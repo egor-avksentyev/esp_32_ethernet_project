@@ -53,10 +53,32 @@ static const char PAGE_HTML[] PROGMEM =
   "#remoteCollapse>div{overflow:hidden}"
   // Обложка — круглая (как пластинка), крутится сама по себе, пока показана. object-fit:cover
   // держит квадратный кроп даже если реальное изображение с CDN окажется не идеально квадратным
-  // (border-radius:50% на не-квадратной картинке дал бы эллипс, а не круг)
-  "#trackArt{border-radius:50%;object-fit:cover;animation:spin 20s linear infinite}"
+  // (border-radius:50% на не-квадратной картинке дал бы эллипс, а не круг). animation-play-state
+  // по умолчанию paused — крутится, только пока реально играет (см. pollTrack(), та же логика,
+  // что у иконки play/pause и эквалайзера ниже), пластинка не крутится на паузе
+  "#trackArt{border-radius:50%;object-fit:cover;animation:spin 20s linear infinite;animation-play-state:paused}"
   "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"
+  // Прыгающий эквалайзер слева экрана — position:fixed на всю высоту вьюпорта (виден всегда,
+  // не часть потока страницы), pointer-events:none — чтобы не перехватывал тапы/клики по
+  // реальным элементам управления под ним. Каждый столбик — своя длительность/задержка
+  // анимации, иначе все скакали бы синхронно и выглядело бы как один столбик, а не эквалайзер.
+  // 1см — реальная физическая единица CSS (не px) — сама переводится браузером в пиксели
+  // под фактическое разрешение экрана, ровно то ограничение, что попросили
+  "#equalizer{position:fixed;left:0;top:0;height:100vh;display:flex;align-items:flex-end;"
+  "gap:3px;padding:0 6px;pointer-events:none}"
+  "#equalizer .eqBar{width:4px;background:#8cf;border-radius:2px;height:3px;"
+  "animation:eqBounce 1s ease-in-out infinite;animation-play-state:paused}"
+  // Как и у трека выше — крутится/скачет, только пока реально играет
+  "#equalizer.playing .eqBar{animation-play-state:running}"
+  "#equalizer .eqBar:nth-child(1){animation-duration:.8s;animation-delay:0s}"
+  "#equalizer .eqBar:nth-child(2){animation-duration:1.1s;animation-delay:.15s}"
+  "#equalizer .eqBar:nth-child(3){animation-duration:.9s;animation-delay:.3s}"
+  "#equalizer .eqBar:nth-child(4){animation-duration:1.2s;animation-delay:.05s}"
+  "#equalizer .eqBar:nth-child(5){animation-duration:1s;animation-delay:.25s}"
+  "@keyframes eqBounce{0%,100%{height:3px}50%{height:1cm}}"
   "</style></head><body>"
+  "<div id=equalizer><div class=eqBar></div><div class=eqBar></div><div class=eqBar></div>"
+  "<div class=eqBar></div><div class=eqBar></div></div>"
   // justify-content:space-between — слева выбор языка, справа дата/погода (было flex-end,
   // держало только правый блок). max-width на правом блоке — чтобы длинное название города
   // не растягивало его на всю ширину экрана, а переносилось внутри своих 55%
@@ -347,6 +369,10 @@ static const char PAGE_HTML[] PROGMEM =
   "let art=document.getElementById('trackArt');"
   "if(j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
   "else{art.style.display='none'}"
+  // Пластинка крутится/эквалайзер прыгает, только пока реально играет — та же логика, что и у
+  // иконки play/pause выше (j.playing, с той же оговоркой про AirPlay из её комментария)
+  "art.style.animationPlayState=j.playing?'running':'paused';"
+  "document.getElementById('equalizer').classList.toggle('playing',j.playing);"
   "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
   "function tickTrack(){"
   "document.getElementById('trackSeek').max=trackLen;"
