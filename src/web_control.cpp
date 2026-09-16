@@ -51,15 +51,22 @@ static const char PAGE_HTML[] PROGMEM =
   "#remoteCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
   "#remoteCollapse.open{grid-template-rows:1fr}"
   "#remoteCollapse>div{overflow:hidden}"
+  // Обложка — круглая (как пластинка), крутится сама по себе, пока показана. object-fit:cover
+  // держит квадратный кроп даже если реальное изображение с CDN окажется не идеально квадратным
+  // (border-radius:50% на не-квадратной картинке дал бы эллипс, а не круг)
+  "#trackArt{border-radius:50%;object-fit:cover;animation:spin 20s linear infinite}"
+  "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"
   "</style></head><body>"
   // justify-content:space-between — слева выбор языка, справа дата/погода (было flex-end,
   // держало только правый блок). max-width на правом блоке — чтобы длинное название города
   // не растягивало его на всю ширину экрана, а переносилось внутри своих 55%
   "<div style='display:flex;justify-content:space-between;align-items:flex-start;padding:6px 10px 0'>"
   // Флаг — просто эмодзи-текст внутри <option>, работает без картинок/доп. разметки.
-  // Порядок — как попросили: украинский первым, русский последним, румынский между ними
+  // Порядок — как попросили: украинский первым, русский последним (английский/румынский
+  // между ними — порядок для них отдельно не оговаривался)
   "<select id=langSelect onchange=applyLanguage(this.value)>"
   "<option value=uk>&#127482;&#127462; Українська</option>"
+  "<option value=en>&#127468;&#127463; English</option>"
   "<option value=ro>&#127479;&#127476; Română</option>"
   "<option value=ru>&#127479;&#127482; Русский</option>"
   "</select>"
@@ -91,7 +98,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onclick=cmd('power') data-i18n=power>Power</button></div>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
-  "<img id=trackArt style='display:none;max-width:240px;border-radius:6px;margin:0 auto 6px'>"
+  "<img id=trackArt style='display:none;width:200px;height:200px;margin:0 auto 6px'>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:2.1em;color:#ccc;margin-bottom:4px'></div>"
   "<div id=trackProgress>"
@@ -119,18 +126,27 @@ static const char PAGE_HTML[] PROGMEM =
   "<span id=trackCur>0:00</span> / <span id=trackLen>0:00</span></div>"
   "</div></div>"
   "<div id=playbackWrap style='margin-top:10px;display:none'>"
-  "<button class=playerBtn onclick=playerCmd('prev',this)>&laquo;</button>"
-  // Классическая пара "треугольник + два прямоугольника" одной SVG-иконкой, не текст —
-  // fill='currentColor' наследует цвет текста кнопки, без отдельного CSS. Один и тот же значок
-  // и для play, и для pause (кнопка одна, переключает сама через "onepause" — см. комментарий
-  // ниже про то, почему реальное состояние play/pause не всегда известно надёжно)
-  "<button class=playerBtn onclick=playerCmd('onepause',this)>"
-  "<svg viewBox='0 0 36 24' width='22' height='16' fill='currentColor'>"
-  "<path d='M2 2L2 22L16 12Z'></path>"
-  "<rect x='22' y='2' width='5' height='20'></rect>"
-  "<rect x='30' y='2' width='5' height='20'></rect>"
+  // Классические "skip" иконки (треугольник + вертикальная черта), не просто угловые скобки —
+  // тот же приём, что у play/pause ниже: SVG с fill='currentColor', наследует цвет кнопки
+  "<button class=playerBtn onclick=playerCmd('prev',this)>"
+  "<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'>"
+  "<rect x='4' y='4' width='3' height='16'></rect>"
+  "<path d='M20 4L8 12L20 20Z'></path>"
   "</svg></button>"
-  "<button class=playerBtn onclick=playerCmd('next',this)>&raquo;</button>"
+  // Иконка внутри отдельного <span> — playerCmd() запоминает/восстанавливает innerHTML ВСЕЙ
+  // кнопки на время запроса (btn.innerHTML='&hellip;'), а pollTrack() ниже должна уметь менять
+  // именно иконку (play/pause, в зависимости от j.playing), не трогая остальное. Не один и тот
+  // же значок на обе стороны — см. комментарий у pollTrack() за тем, почему теперь можно
+  // показывать именно текущее состояние, а не нейтральный комбинированный символ
+  "<button id=playPauseBtn class=playerBtn onclick=playerCmd('onepause',this)>"
+  "<span id=playPauseIcon>"
+  "<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'><path d='M5 3L20 12L5 21Z'></path></svg>"
+  "</span></button>"
+  "<button class=playerBtn onclick=playerCmd('next',this)>"
+  "<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'>"
+  "<path d='M4 4L16 12L4 20Z'></path>"
+  "<rect x='17' y='4' width='3' height='16'></rect>"
+  "</svg></button>"
   "<div style='margin-top:8px'>"
   "<input id=volSlider type=range min=0 max=100 value=50 style='width:18%;touch-action:none' "
   "oninput='volDragging=true' onchange=setVolume(this.value)>"
@@ -181,7 +197,18 @@ static const char PAGE_HTML[] PROGMEM =
   "drizzle:'Burniță',freezingDrizzle:'Burniță înghețată',rain:'Ploaie',heavyRain:'Ploaie puternică',"
   "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
   "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
-  "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}}"
+  "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}},"
+  "en:{remoteControl:'Remote Control',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
+  "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
+  "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
+  "invalidIp:'Invalid IP',"
+  "forgetWifiConfirm:'Forget the current Wi-Fi network and reboot into setup mode?',"
+  "forgetWifiDone:'Done. The device brought up the access point ',"
+  "weather:{clear:'Clear',cloudy:'Partly cloudy',overcast:'Overcast',fog:'Fog',"
+  "drizzle:'Drizzle',freezingDrizzle:'Freezing drizzle',rain:'Rain',heavyRain:'Heavy rain',"
+  "freezingRain:'Freezing rain',snow:'Snow',heavySnow:'Heavy snow',snowGrains:'Snow grains',"
+  "showers:'Showers',heavyShowers:'Heavy showers',snowShowers:'Snow showers',thunder:'Thunderstorm',"
+  "thunderHail:'Thunderstorm with hail'}}"
   "};"
   "let currentLang='uk';"
   "let lastStatus=null;"
@@ -267,6 +294,17 @@ static const char PAGE_HTML[] PROGMEM =
   "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false,trackSeekDragging=false;"
   "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
   "return m+':'+(s<10?'0':'')+s}"
+  // Play (треугольник) — показывается, когда СЕЙЧАС не играет (нажатие возобновит); Pause (два
+  // прямоугольника) — когда играет (нажатие поставит на паузу). j.playing — это trackPlaying на
+  // ESP32 (arylicTrackIsPlaying()), которое для AirPlay идёт уже ЧЕРЕЗ оптимистичный оверрайд
+  // (arylicNotifyOnepausePressed(), см. arylic_metadata.h) — то есть верно отражает результат
+  // именно ЭТОЙ кнопки, хоть и не поймает паузу, поставленную где-то ещё (см. память проекта:
+  // project_arylic_airplay_no_metadata — так и остаётся, это не баг иконки, а предел того, что
+  // вообще можно узнать про AirPlay)
+  "const PLAY_ICON=`<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'>"
+  "<path d='M5 3L20 12L5 21Z'></path></svg>`;"
+  "const PAUSE_ICON=`<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'>"
+  "<rect x='5' y='3' width='5' height='18'></rect><rect x='14' y='3' width='5' height='18'></rect></svg>`;"
   // hasTrack — трек ли играет ПРЯМО СЕЙЧАС, или он просто на паузе (j.text/j.art остаются
   // заполнены сервером и на паузе, см. arylic_metadata.cpp, ветка "не играет" — очищаются
   // только когда Arylic реально пропал из сети, не на обычной паузе кнопкой Play/Pause).
@@ -274,6 +312,7 @@ static const char PAGE_HTML[] PROGMEM =
   // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
   "trackPlayingNow=j.playing;trackLen=j.len;"
+  "document.getElementById('playPauseIcon').innerHTML=j.playing?PAUSE_ICON:PLAY_ICON;"
   // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
   // и эта строка каждые 500мс безусловно перезаписывала trackPos/trackFetchTime сырыми
   // серверными данными, включая момент сразу после перемотки, пока Arylic/бэкграунд-опрос
