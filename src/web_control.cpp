@@ -132,7 +132,7 @@ static const char PAGE_HTML[] PROGMEM =
   "</div>"
   "<div><button onclick=cmd('mute') data-i18n=mute>Mute</button>"
   "<button onclick=cmd('set') data-i18n=source>Source</button>"
-  "<button onclick=cmd('power') data-i18n=power>Power</button></div>"
+  "<button onclick=powerOffClick() data-i18n=power>Power</button></div>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt style='display:none;width:200px;height:200px;margin:0 auto 6px'>"
@@ -200,10 +200,32 @@ static const char PAGE_HTML[] PROGMEM =
   "<div id=powerOffScreen style='display:none;position:fixed;inset:0;align-items:center;justify-content:center'>"
   "<button id=powerOnBtn onclick=cmd('power') "
   "style='width:140px;height:140px;border-radius:50%;font-size:1.05em;line-height:1.3'>"
-  "<span data-i18n=powerOn>Power On</span></button>"
+  "<span id=powerOnLabel data-i18n=powerOn>Power On</span></button>"
   "</div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
+  // Mega физически довозит Bass/High/Volume к нулю и держит 3с экран "POWER OFF" ПЕРЕД тем,
+  // как реально обесточиться (см. CLAUDE.md/on_off_logic.cpp в репозитории Mega,
+  // seekBassHighVolumeToZeroBlocking()+powerOffDevices()) — всё это время цикл на Mega
+  // блокирован целиком и не читает UART от ESP32 вообще, так что "Power On", нажатый в это
+  // окно, физически не может подействовать раньше, чем Mega освободится (~8с по факту на
+  // живом устройстве). Mega ничего не подтверждает обратно (UART в одну сторону, см. README) —
+  // это лишь оценка сверху для индикации, не гарантия: если Mega освободится позже, кнопка
+  // просто станет активной чуть раньше, чем реально сработает
+  "const MEGA_POWEROFF_BUSY_MS=9000;"
+  "let megaBusyUntil=0;"
+  "function powerOffClick(){megaBusyUntil=Date.now()+MEGA_POWEROFF_BUSY_MS;cmd('power')}"
+  "function updatePowerOnBtn(){"
+  "let btn=document.getElementById('powerOnBtn');"
+  "let remain=megaBusyUntil-Date.now();"
+  "if(remain>0){"
+  "btn.disabled=true;"
+  "document.getElementById('powerOnLabel').innerText=I18N[currentLang].poweringOff+'… '+Math.ceil(remain/1000);"
+  "}else{"
+  "btn.disabled=false;"
+  "document.getElementById('powerOnLabel').innerText=I18N[currentLang].powerOn;"
+  "}}"
+  "setInterval(updatePowerOnBtn,250);"
   "let holdTimer=null;"
   "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),150)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
@@ -227,7 +249,7 @@ static const char PAGE_HTML[] PROGMEM =
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
   "const I18N={"
   "ru:{remoteControl:'Пульт',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
-  "powerOn:'Включить',"
+  "powerOn:'Включить',poweringOff:'Выключение',"
   "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
   "invalidIp:'Некорректный IP',"
@@ -239,7 +261,7 @@ static const char PAGE_HTML[] PROGMEM =
   "showers:'Ливень',heavyShowers:'Сильный ливень',snowShowers:'Снегопад',thunder:'Гроза',"
   "thunderHail:'Гроза с градом'}},"
   "uk:{remoteControl:'Пульт',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
-  "powerOn:'Увімкнути',"
+  "powerOn:'Увімкнути',poweringOff:'Вимкнення',"
   "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
   "invalidIp:'Некоректний IP',"
@@ -251,7 +273,7 @@ static const char PAGE_HTML[] PROGMEM =
   "showers:'Злива',heavyShowers:'Сильна злива',snowShowers:'Снігопад',thunder:'Гроза',"
   "thunderHail:'Гроза з градом'}},"
   "ro:{remoteControl:'Telecomandă',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
-  "powerOn:'Pornește',"
+  "powerOn:'Pornește',poweringOff:'Se oprește',"
   "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
   "invalidIp:'IP invalid',"
@@ -263,7 +285,7 @@ static const char PAGE_HTML[] PROGMEM =
   "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
   "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}},"
   "en:{remoteControl:'Remote Control',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
-  "powerOn:'Power On',"
+  "powerOn:'Power On',poweringOff:'Powering off',"
   "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
   "invalidIp:'Invalid IP',"
@@ -370,6 +392,8 @@ static const char PAGE_HTML[] PROGMEM =
   // между опросами позиция досчитывается локально по реальному прошедшему времени (Date.now()),
   // чтобы полоска ехала плавно, а не прыгала — см. arylic_metadata.h за объяснением age
   "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false,trackSeekDragging=false;"
+  // См. togglePlayPause() ниже за тем, зачем нужна эта пара (null — не ждём подтверждения)
+  "let playPauseExpected=null,playPauseExpectedSince=0;"
   "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
   "return m+':'+(s<10?'0':'')+s}"
   // Play (треугольник) — показывается, когда СЕЙЧАС не играет (нажатие возобновит); Pause (два
@@ -391,13 +415,18 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('playPauseIcon').innerHTML=playing?PAUSE_ICON:PLAY_ICON;"
   "document.getElementById('trackArt').style.animationPlayState=playing?'running':'paused';"
   "document.getElementById('equalizer').classList.toggle('playing',playing)}"
-  // Реагирует на САМ клик по кнопке, а не ждёт следующего опроса /track (до 500мс задержки) —
-  // сразу переключает локально запомненное состояние и перерисовывает иконку/анимации, а уже
-  // потом отправляет реальную команду. Если сервер потом пришлёт другое (например пауза не
-  // применилась из-за сбоя связи) — pollTrack() всё равно поправит на следующем опросе, эта
-  // оптимистичная перерисовка — только ради мгновенного отклика на нажатие
+  // playPauseExpected/-Since — pollTrack() ниже игнорирует любой ответ /track, не совпадающий
+  // с этим ожиданием, пока оно не подтвердится (или не протухнет по таймауту). Раньше вместо
+  // этого был просто !playerCmdBusy — недостаточно: playerCmdBusy снимается сразу, как только
+  // САМА HTTPS-команда onepause долетела до Arylic, но фоновый опрос Arylic (arylic_metadata.cpp,
+  // независимая задача на ESP32) обновляет закэшированное trackPlaying СВОИМ отдельным циклом —
+  // для источников без оптимистичного оверрайда (не AirPlay, см. arylicNotifyOnepausePressed())
+  // между этими двумя моментами ещё оставалось окно, где /track успевал вернуть СТАРОЕ значение
+  // уже после снятия playerCmdBusy — иконка прыгала на него и только следующим опросом
+  // возвращалась в верное состояние (треугольник -> пауза -> треугольник)
   "function togglePlayPause(btn){"
   "trackPlayingNow=!trackPlayingNow;"
+  "playPauseExpected=trackPlayingNow;playPauseExpectedSince=Date.now();"
   "updatePlayVisuals(trackPlayingNow);"
   "playerCmd('onepause',btn)}"
   // hasTrack — трек ли играет ПРЯМО СЕЙЧАС, или он просто на паузе (j.text/j.art остаются
@@ -405,13 +434,13 @@ static const char PAGE_HTML[] PROGMEM =
   // только когда Arylic реально пропал из сети, не на обычной паузе кнопкой Play/Pause).
   // Поэтому обложку/заголовок/источник показываем по наличию данных, а не по j.playing —
   // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
-  // Та же гонка, что у volDragging/trackSeekDragging ниже — пока playerCmdBusy (наша же
-  // onepause-команда ещё в полёте к Arylic, ~1.5-2с), этот опрос всё ещё возвращает СТАРОЕ
-  // серверное состояние и перетирал бы только что применённую оптимистичную иконку обратно,
-  // пока реальная команда не долетит — отсюда и было "прыгает туда-сюда, потом стабилизируется"
+  // См. playPauseExpected/togglePlayPause() выше — та же гонка, что у volDragging/
+  // trackSeekDragging: игнорируем любой ответ, не совпадающий с ожиданием, пока не совпадёт
+  // (или не протухнет по таймауту, на случай если сама команда не применилась)
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
   "trackLen=j.len;"
-  "if(!playerCmdBusy){trackPlayingNow=j.playing;updatePlayVisuals(j.playing)}"
+  "if(playPauseExpected===null||j.playing===playPauseExpected||Date.now()-playPauseExpectedSince>4000){"
+  "trackPlayingNow=j.playing;updatePlayVisuals(j.playing);playPauseExpected=null}"
   // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
   // и эта строка каждые 500мс безусловно перезаписывала trackPos/trackFetchTime сырыми
   // серверными данными, включая момент сразу после перемотки, пока Arylic/бэкграунд-опрос
