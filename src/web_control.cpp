@@ -42,15 +42,28 @@ static const char PAGE_HTML[] PROGMEM =
   // click, а второй клик двойного клика должен ДОЙТИ до JS и встать в playerCmdQueued (см.
   // playerCmd() ниже), просто визуально "притушенным" на время запроса
   "button.pending{opacity:.5}"
+  "select{font-size:.85em;background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:4px 6px}"
   "#status{margin:12px;font-size:1.1em;color:#8cf}"
+  "#remoteToggle{font-size:1em;padding:10px 18px}"
+  // Плавное сворачивание/разворачивание без JS-измерения высоты — CSS Grid с
+  // grid-template-rows: 0fr -> 1fr, стандартный приём для анимации "auto height", которую
+  // обычный max-height/transition сделать плавной не может без знания реальной высоты контента
+  "#remoteCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
+  "#remoteCollapse.open{grid-template-rows:1fr}"
+  "#remoteCollapse>div{overflow:hidden}"
   "</style></head><body>"
-  // flex+justify-content:flex-end вместо position:absolute — остаётся в потоке документа, так
-  // заголовок ниже сам сдвинется, не нужно вручную резервировать место под этот блок (а на
-  // мобильной ширине блок бы точно съезжал по высоте из-за переноса строк). max-width — чтобы
-  // при длинном названии города блок не растягивался на всю ширину экрана, а переносился внутри
-  // своих 65%, оставаясь прижатым к правому краю
-  "<div style='display:flex;justify-content:flex-end;padding:6px 10px 0'>"
-  "<div style='text-align:right;max-width:65%'>"
+  // justify-content:space-between — слева выбор языка, справа дата/погода (было flex-end,
+  // держало только правый блок). max-width на правом блоке — чтобы длинное название города
+  // не растягивало его на всю ширину экрана, а переносилось внутри своих 55%
+  "<div style='display:flex;justify-content:space-between;align-items:flex-start;padding:6px 10px 0'>"
+  // Флаг — просто эмодзи-текст внутри <option>, работает без картинок/доп. разметки.
+  // Порядок — как попросили: украинский первым, русский последним, румынский между ними
+  "<select id=langSelect onchange=applyLanguage(this.value)>"
+  "<option value=uk>&#127482;&#127462; Українська</option>"
+  "<option value=ro>&#127479;&#127476; Română</option>"
+  "<option value=ru>&#127479;&#127482; Русский</option>"
+  "</select>"
+  "<div style='text-align:right;max-width:55%'>"
   "<span id=dtClock style='font-size:.85em;color:#aaa'>--:--:--</span>"
   "<span style='font-size:.85em;color:#aaa'> &middot; </span>"
   "<span id=dtDate style='font-size:.85em;color:#aaa'></span>"
@@ -58,10 +71,14 @@ static const char PAGE_HTML[] PROGMEM =
   "<span id=weatherIcon style='font-size:1.8em;vertical-align:middle'></span> "
   "<span id=weatherText style='font-size:1.15em;color:#8cf;vertical-align:middle'></span>"
   "</div></div></div>"
-  "<h2>Preamp Remote Control</h2>"
+  // Тембр-блок (левая/правая/энтер, вверх/вниз, mute/source/power) теперь скрыт за этой
+  // кнопкой — раньше был всегда виден под заголовком "Preamp Remote Control", теперь сам
+  // заголовок стал кнопкой-раскрывашкой (см. toggleRemote()/#remoteCollapse в <style>)
+  "<button id=remoteToggle onclick=toggleRemote()><span data-i18n=remoteControl>Remote Control</span></button>"
+  "<div id=remoteCollapse><div>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
-  "<button onclick=cmd('enter')>OK</button>"
+  "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
   "<button onclick=cmd('right')>&rarr;</button></div>"
   "<div>"
   "<button onmousedown=startHold('up') onmouseup=stopHold() onmouseleave=stopHold()"
@@ -69,9 +86,10 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onmousedown=startHold('down') onmouseup=stopHold() onmouseleave=stopHold()"
   " ontouchstart=startHold('down') ontouchend=stopHold()>&darr;</button>"
   "</div>"
-  "<div><button onclick=cmd('mute')>Mute</button>"
-  "<button onclick=cmd('set')>Source</button>"
-  "<button onclick=cmd('power')>Power</button></div>"
+  "<div><button onclick=cmd('mute') data-i18n=mute>Mute</button>"
+  "<button onclick=cmd('set') data-i18n=source>Source</button>"
+  "<button onclick=cmd('power') data-i18n=power>Power</button></div>"
+  "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt style='display:none;max-width:240px;border-radius:6px;margin:0 auto 6px'>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
@@ -102,7 +120,16 @@ static const char PAGE_HTML[] PROGMEM =
   "</div></div>"
   "<div id=playbackWrap style='margin-top:10px;display:none'>"
   "<button class=playerBtn onclick=playerCmd('prev',this)>&laquo;</button>"
-  "<button class=playerBtn onclick=playerCmd('onepause',this)>Play/Pause</button>"
+  // Классическая пара "треугольник + два прямоугольника" одной SVG-иконкой, не текст —
+  // fill='currentColor' наследует цвет текста кнопки, без отдельного CSS. Один и тот же значок
+  // и для play, и для pause (кнопка одна, переключает сама через "onepause" — см. комментарий
+  // ниже про то, почему реальное состояние play/pause не всегда известно надёжно)
+  "<button class=playerBtn onclick=playerCmd('onepause',this)>"
+  "<svg viewBox='0 0 36 24' width='22' height='16' fill='currentColor'>"
+  "<path d='M2 2L2 22L16 12Z'></path>"
+  "<rect x='22' y='2' width='5' height='20'></rect>"
+  "<rect x='30' y='2' width='5' height='20'></rect>"
+  "</svg></button>"
   "<button class=playerBtn onclick=playerCmd('next',this)>&raquo;</button>"
   "<div style='margin-top:8px'>"
   "<input id=volSlider type=range min=0 max=100 value=50 style='width:18%;touch-action:none' "
@@ -110,20 +137,92 @@ static const char PAGE_HTML[] PROGMEM =
   "</div></div>"
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
-  "<button id=arylicApply onclick=applyArylicIp()>Применить</button></div>"
-  "<div><button onclick=forgetWifi() style='background:#733'>Сменить Wi-Fi</button></div>"
+  "<button id=arylicApply onclick=applyArylicIp() data-i18n=apply>Применить</button></div>"
+  "<div><button onclick=forgetWifi() style='background:#733' data-i18n=changeWifi>Сменить Wi-Fi</button></div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
   "let holdTimer=null;"
   "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),150)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
-  "function poll(){fetch('/status').then(r=>r.text()).then(t=>{"
-  "document.getElementById('status').innerText=t})}"
+  "function toggleRemote(){document.getElementById('remoteCollapse').classList.toggle('open')}"
+  // Все три языка целиком на клиенте — переключение мгновенное, без похода на сервер и без
+  // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
+  // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
+  "const I18N={"
+  "ru:{remoteControl:'Пульт',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
+  "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
+  "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
+  "invalidIp:'Некорректный IP',"
+  "forgetWifiConfirm:'Забыть текущую Wi-Fi сеть и перезагрузиться в режим настройки?',"
+  "forgetWifiDone:'Готово. Устройство подняло точку доступа ',"
+  "weather:{clear:'Ясно',cloudy:'Переменная облачность',overcast:'Пасмурно',fog:'Туман',"
+  "drizzle:'Морось',freezingDrizzle:'Ледяная морось',rain:'Дождь',heavyRain:'Сильный дождь',"
+  "freezingRain:'Ледяной дождь',snow:'Снег',heavySnow:'Сильный снег',snowGrains:'Снежная крупа',"
+  "showers:'Ливень',heavyShowers:'Сильный ливень',snowShowers:'Снегопад',thunder:'Гроза',"
+  "thunderHail:'Гроза с градом'}},"
+  "uk:{remoteControl:'Пульт',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
+  "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
+  "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
+  "invalidIp:'Некоректний IP',"
+  "forgetWifiConfirm:'Забути поточну мережу Wi-Fi і перезавантажитися в режим налаштування?',"
+  "forgetWifiDone:'Готово. Пристрій підняв точку доступу ',"
+  "weather:{clear:'Ясно',cloudy:'Мінлива хмарність',overcast:'Похмуро',fog:'Туман',"
+  "drizzle:'Мряка',freezingDrizzle:'Крижана мряка',rain:'Дощ',heavyRain:'Сильний дощ',"
+  "freezingRain:'Крижаний дощ',snow:'Сніг',heavySnow:'Сильний сніг',snowGrains:'Снігова крупа',"
+  "showers:'Злива',heavyShowers:'Сильна злива',snowShowers:'Снігопад',thunder:'Гроза',"
+  "thunderHail:'Гроза з градом'}},"
+  "ro:{remoteControl:'Telecomandă',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
+  "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
+  "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
+  "invalidIp:'IP invalid',"
+  "forgetWifiConfirm:'Uiți rețeaua Wi-Fi curentă și repornești în modul de configurare?',"
+  "forgetWifiDone:'Gata. Dispozitivul a pornit punctul de acces ',"
+  "weather:{clear:'Senin',cloudy:'Parțial noros',overcast:'Înnorat',fog:'Ceață',"
+  "drizzle:'Burniță',freezingDrizzle:'Burniță înghețată',rain:'Ploaie',heavyRain:'Ploaie puternică',"
+  "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
+  "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
+  "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}}"
+  "};"
+  "let currentLang='uk';"
+  "let lastStatus=null;"
+  // Объявлены здесь, ДО восстановления сохранённого языка ниже (та вызывает applyLanguage()
+  // -> renderWeather() сразу же, синхронно, при загрузке скрипта) — если бы эти let остались
+  // на своём "логическом" месте рядом с loadWeather() (ниже по файлу), скрипт падал бы на
+  // старте с ReferenceError (temporal dead zone: переменная объявлена, но её строка кода еще
+  // не выполнилась к моменту первого обращения)
+  "let lastWeatherCode=null,lastWeatherTemp=null,lastWeatherCity=null;"
+  "function renderStatus(){"
+  "if(!lastStatus)return;"
+  "let t=I18N[currentLang];"
+  "let s=lastStatus.wifi?t.wifiOk:t.wifiOff;"
+  "if(lastStatus.lastCmd)s+=' | '+t.lastCommand+': '+lastStatus.lastCmd;"
+  "document.getElementById('status').innerText=s}"
+  // Один общий обработчик на все элементы с data-i18n (innerText) — не нужно перечислять их
+  // поштучно и держать список синхронным с разметкой. ipPlaceholder — отдельно, у input это
+  // атрибут placeholder, не innerText
+  "function applyLanguage(lang){"
+  "let t=I18N[lang];"
+  "if(!t)return;"
+  "currentLang=lang;"
+  "document.querySelectorAll('[data-i18n]').forEach(el=>{el.innerText=t[el.getAttribute('data-i18n')]});"
+  "document.getElementById('arylicIp').placeholder=t.ipPlaceholder;"
+  "try{localStorage.setItem('lang',lang)}catch(e){}"
+  "renderStatus();"
+  "renderWeather()}"
+  // Восстановление сохранённого языка — сразу при загрузке страницы, до первого опроса
+  // /status и /track (та же причина, что у remoteControl-кнопки — заголовок ниже уже должен
+  // быть на нужном языке с первого кадра, не мигать русским текстом на долю секунды)
+  "(function(){let saved='uk';"
+  "try{saved=localStorage.getItem('lang')||'uk'}catch(e){}"
+  "if(!I18N[saved])saved='uk';"
+  "document.getElementById('langSelect').value=saved;"
+  "applyLanguage(saved)})();"
+  "function poll(){fetch('/status').then(r=>r.json()).then(j=>{lastStatus=j;renderStatus()})}"
   "setInterval(poll,1500);poll();"
   "function applyArylicIp(){"
   "let v=document.getElementById('arylicIp').value;"
   "fetch('/arylic-ip?ip='+encodeURIComponent(v),{method:'POST'})"
-  ".then(r=>{if(!r.ok)alert('Некорректный IP')})}"
+  ".then(r=>{if(!r.ok)alert(I18N[currentLang].invalidIp)})}"
   // Пока Arylic реально виден (см. arylicIsReachable() в arylic_metadata.cpp) — поле и кнопка
   // неактивны, ручной ввод не нужен; текущий определённый адрес подставляется в поле для
   // наглядности. Как только связь пропадает — поле включается само, без перезагрузки страницы
@@ -260,14 +359,18 @@ static const char PAGE_HTML[] PROGMEM =
   "setInterval(tickClock,1000);tickClock();"
   // Погода — по геолокации через IP (не GPS): ipwho.is первым, ip-api.com — фолбэк, если
   // первый недоступен/перегружен (оба публичные, бесплатные, без ключа, с CORS *). Погода —
-  // через Open-Meteo (тоже бесплатный, без ключа, CORS *), коды по таблице WMO
-  "const WEATHER_CODES={0:'Ясно',1:'Ясно',2:'Переменная облачность',3:'Пасмурно',"
-  "45:'Туман',48:'Туман',51:'Морось',53:'Морось',55:'Морось',56:'Ледяная морось',"
-  "57:'Ледяная морось',61:'Дождь',63:'Дождь',65:'Сильный дождь',66:'Ледяной дождь',"
-  "67:'Ледяной дождь',71:'Снег',73:'Снег',75:'Сильный снег',77:'Снежная крупа',"
-  "80:'Ливень',81:'Ливень',82:'Сильный ливень',85:'Снегопад',86:'Снегопад',"
-  "95:'Гроза',96:'Гроза с градом',99:'Гроза с градом'};"
-  // Иконка по тому же коду WMO — отдельная таблица, не завязана на текст описания
+  // через Open-Meteo (тоже бесплатный, без ключа, CORS *), коды по таблице WMO.
+  // Описание — по общему ключу (не прямо по коду WMO), сам текст на 3 языках — в I18N[..].weather
+  // выше; так каждый перевод пишется один раз, а не по разу на каждый числовой код WMO
+  "const WEATHER_LABEL_BY_CODE={0:'clear',1:'clear',2:'cloudy',3:'overcast',"
+  "45:'fog',48:'fog',51:'drizzle',53:'drizzle',"
+  "55:'drizzle',56:'freezingDrizzle',57:'freezingDrizzle',61:'rain',"
+  "63:'rain',65:'heavyRain',66:'freezingRain',67:'freezingRain',"
+  "71:'snow',73:'snow',75:'heavySnow',77:'snowGrains',"
+  "80:'showers',81:'showers',82:'heavyShowers',85:'snowShowers',"
+  "86:'snowShowers',95:'thunder',96:'thunderHail',99:'thunderHail'};"
+  // Иконка по тому же коду WMO — отдельная таблица, не завязана на текст описания (и потому не
+  // нуждается в переводе — это просто эмодзи-картинка)
   "const WEATHER_ICONS={0:'☀️',1:'☀️',2:'⛅',3:'☁️',"
   "45:'🌫️',48:'🌫️',51:'🌦️',53:'🌦️',"
   "55:'🌦️',56:'🌨️',57:'🌨️',61:'🌧️',"
@@ -282,19 +385,29 @@ static const char PAGE_HTML[] PROGMEM =
   ".catch(()=>fetch('http://ip-api.com/json/').then(r=>r.json()).then(loc=>{"
   "if(loc.status==='success')return{lat:loc.lat,lon:loc.lon,city:loc.city};"
   "throw 0}))}"
+  // Название города — как его вернул сервис геолокации, не переводим (имя собственное).
+  // Код/температуру/город кэшируем в lastWeather* (объявлены выше, см. комментарий там) —
+  // при смене языка (applyLanguage()) нужно перерисовать текст БЕЗ нового опроса погоды,
+  // иначе после переключения языка старое описание висело бы ещё до 30 минут (следующий
+  // loadWeather())
   "function loadWeather(){fetchLocation().then(loc=>"
   "fetch('https://api.open-meteo.com/v1/forecast?latitude='+loc.lat+'&longitude='+loc.lon"
   "+'&current_weather=true').then(r=>r.json()).then(w=>{"
-  "let cw=w.current_weather;let desc=WEATHER_CODES[cw.weathercode]||'';"
-  "document.getElementById('weatherIcon').innerText=WEATHER_ICONS[cw.weathercode]||'';"
-  "document.getElementById('weatherText').innerText="
-  "loc.city+': '+Math.round(cw.temperature)+'°C, '+desc}))"
+  "let cw=w.current_weather;"
+  "lastWeatherCode=cw.weathercode;lastWeatherTemp=Math.round(cw.temperature);lastWeatherCity=loc.city;"
+  "renderWeather()}))"
   ".catch(()=>{})}"
+  "function renderWeather(){"
+  "if(lastWeatherCode===null)return;"
+  "document.getElementById('weatherIcon').innerText=WEATHER_ICONS[lastWeatherCode]||'';"
+  "let key=WEATHER_LABEL_BY_CODE[lastWeatherCode];"
+  "let desc=(I18N[currentLang].weather[key])||'';"
+  "document.getElementById('weatherText').innerText=lastWeatherCity+': '+lastWeatherTemp+'°C, '+desc}"
   // Раз в 30 минут — погода не меняется поминутно, незачем дёргать сторонние сервисы чаще
   "loadWeather();setInterval(loadWeather,1800000);"
-  "function forgetWifi(){if(confirm('Забыть текущую Wi-Fi сеть и перезагрузиться в режим "
-  "настройки?')){fetch('/wifi-forget',{method:'POST'})"
-  ".then(()=>alert('Готово. Устройство подняло точку доступа " WIFI_PROVISION_AP_SSID "'))}}"
+  "function forgetWifi(){if(confirm(I18N[currentLang].forgetWifiConfirm)){"
+  "fetch('/wifi-forget',{method:'POST'})"
+  ".then(()=>alert(I18N[currentLang].forgetWifiDone+'" WIFI_PROVISION_AP_SSID "'))}}"
   "</script></body></html>";
 
 static void handleRoot() {
@@ -315,13 +428,18 @@ static void handleCmd() {
   server.send(204);
 }
 
+// JSON, не готовая строка на русском — текст ("Wi-Fi OK"/"отключён"/"последняя команда")
+// теперь собирает и переводит сам клиент (см. renderStatus() в PAGE_HTML, I18N), у ESP32
+// своего языка нет и быть не должно
 static void handleStatus() {
-  String status = wifiIsConnected() ? "Wi-Fi OK" : "Wi-Fi отключён";
+  String status = "{\"wifi\":";
+  status += wifiIsConnected() ? "true" : "false";
+  status += ",\"lastCmd\":\"";
   if (lastActionSent != '\0') {
-    status += " | последняя команда: ";
     status += lastActionSent;
   }
-  server.send(200, "text/plain", status);
+  status += "\"}";
+  server.send(200, "application/json", status);
 }
 
 static void handleNotFound() {
