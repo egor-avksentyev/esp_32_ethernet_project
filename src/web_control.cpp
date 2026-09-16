@@ -14,6 +14,19 @@ static WebServer server(WEB_SERVER_PORT);
 // mute Mega — см. README.md, "Известное ограничение: статус на веб-странице"
 static char lastActionSent = '\0';
 
+// Только веб-интерфейса это касается — что показывает ЭТА страница ("основной интерфейс" или
+// большая кнопка "Power On"), а не настоящее состояние Mega (узнать его отсюда неоткуда, см.
+// комментарий выше). Флаг здесь, на ESP32, а не только в JS вкладки — чтобы пережить
+// перезагрузку страницы (см. handleStatus()/applyPowerState() в PAGE_HTML): свежая вкладка
+// сразу увидит то же состояние, не сбрасываясь в "включено" по умолчанию
+static bool webPoweredOff = false;
+
+// true, только если паузу при выключении поставили именно мы (см. handleCmd(), action=="power")
+// — а не если трек и так уже стоял на паузе сам по себе. Нужно, чтобы при обратном включении
+// возобновлять воспроизведение ТОЛЬКО в этом случае, а не запускать музыку, которую
+// пользователь сам поставил на паузу заранее
+static bool pausedByPowerOff = false;
+
 struct WebAction {
   const char* name;
   char letter;
@@ -96,6 +109,12 @@ static const char PAGE_HTML[] PROGMEM =
   "<span id=weatherIcon style='font-size:1.8em;vertical-align:middle'></span> "
   "<span id=weatherText style='font-size:1.15em;color:#8cf;vertical-align:middle'></span>"
   "</div></div></div>"
+  // Всё "живое" содержимое страницы (тембр-блок, трек, плеер, ручной IP, смена Wi-Fi) — внутри
+  // одного контейнера, чтобы одним переключением видимости (см. applyPowerState() ниже) убрать
+  // его целиком при выключении питания, оставив только то, что явно должно остаться (язык/
+  // дата/погода в шапке — вне этого div, см. выше) и большую кнопку "Power On" (#powerOffScreen,
+  // тоже вне этого div, см. ниже)
+  "<div id=mainContent>"
   // Тембр-блок (левая/правая/энтер, вверх/вниз, mute/source/power) теперь скрыт за этой
   // кнопкой — раньше был всегда виден под заголовком "Preamp Remote Control", теперь сам
   // заголовок стал кнопкой-раскрывашкой (см. toggleRemote()/#remoteCollapse в <style>)
@@ -173,6 +192,16 @@ static const char PAGE_HTML[] PROGMEM =
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp() data-i18n=apply>Применить</button></div>"
   "<div><button onclick=forgetWifi() style='background:#733' data-i18n=changeWifi>Сменить Wi-Fi</button></div>"
+  "</div>"
+  // Показывается вместо #mainContent, пока выключено (см. applyPowerState()) — большая круглая
+  // кнопка по центру экрана, только она и включает систему обратно. inset:0 — та же самая
+  // область на весь вьюпорт, что и у #equalizer, просто по центру и поверх (обычный порядок
+  // отрисовки — этот div идёт позже в разметке)
+  "<div id=powerOffScreen style='display:none;position:fixed;inset:0;align-items:center;justify-content:center'>"
+  "<button id=powerOnBtn onclick=cmd('power') "
+  "style='width:140px;height:140px;border-radius:50%;font-size:1.05em;line-height:1.3'>"
+  "<span data-i18n=powerOn>Power On</span></button>"
+  "</div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
   "let holdTimer=null;"
@@ -198,6 +227,7 @@ static const char PAGE_HTML[] PROGMEM =
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
   "const I18N={"
   "ru:{remoteControl:'Пульт',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
+  "powerOn:'Включить',"
   "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
   "invalidIp:'Некорректный IP',"
@@ -209,6 +239,7 @@ static const char PAGE_HTML[] PROGMEM =
   "showers:'Ливень',heavyShowers:'Сильный ливень',snowShowers:'Снегопад',thunder:'Гроза',"
   "thunderHail:'Гроза с градом'}},"
   "uk:{remoteControl:'Пульт',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
+  "powerOn:'Увімкнути',"
   "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
   "invalidIp:'Некоректний IP',"
@@ -220,6 +251,7 @@ static const char PAGE_HTML[] PROGMEM =
   "showers:'Злива',heavyShowers:'Сильна злива',snowShowers:'Снігопад',thunder:'Гроза',"
   "thunderHail:'Гроза з градом'}},"
   "ro:{remoteControl:'Telecomandă',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
+  "powerOn:'Pornește',"
   "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
   "invalidIp:'IP invalid',"
@@ -231,6 +263,7 @@ static const char PAGE_HTML[] PROGMEM =
   "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
   "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}},"
   "en:{remoteControl:'Remote Control',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
+  "powerOn:'Power On',"
   "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
   "invalidIp:'Invalid IP',"
@@ -255,7 +288,20 @@ static const char PAGE_HTML[] PROGMEM =
   "let t=I18N[currentLang];"
   "let s=lastStatus.wifi?t.wifiOk:t.wifiOff;"
   "if(lastStatus.lastCmd)s+=' | '+t.lastCommand+': '+lastStatus.lastCmd;"
-  "document.getElementById('status').innerText=s}"
+  "document.getElementById('status').innerText=s;"
+  "applyPowerState(lastStatus.poweredOff)}"
+  // Состояние "выключено" помнит САМ ESP32 (webPoweredOff в web_control.cpp — флаг именно
+  // ЭТОГО веб-интерфейса, а не настоящее состояние Mega, узнать которое неоткуда, см. README —
+  // "Mega ничего не отправляет назад"), а не только текущая вкладка браузера — поэтому
+  // переживает перезагрузку страницы: свежий /status сразу вернёт то, что было, и покажет
+  // нужный экран без лишнего мигания основным интерфейсом на долю секунды
+  "let lastPoweredOff=null;"
+  "function applyPowerState(off){"
+  "if(off===lastPoweredOff)return;"
+  "lastPoweredOff=off;"
+  "document.getElementById('mainContent').style.display=off?'none':'block';"
+  "document.getElementById('powerOffScreen').style.display=off?'flex':'none';"
+  "document.getElementById('equalizer').style.display=off?'none':'block'}"
   // Один общий обработчик на все элементы с data-i18n (innerText) — не нужно перечислять их
   // поштучно и держать список синхронным с разметкой. ipPlaceholder — отдельно, у input это
   // атрибут placeholder, не innerText
@@ -509,6 +555,32 @@ static void handleCmd() {
       if (action == WEB_ACTIONS[i].name) {
         megaLinkSendCommand(WEB_ACTIONS[i].letter);
         lastActionSent = WEB_ACTIONS[i].letter;
+        if (action == "power") {
+          // Само переключение состояния этой веб-вкладки (см. webPoweredOff выше) — Mega
+          // никогда не подтверждает, реально ли она включилась/выключилась (UART только в
+          // одну сторону), поэтому это оптимистичное отражение последнего нажатия, не более
+          webPoweredOff = !webPoweredOff;
+          if (webPoweredOff) {
+            // На паузу — только уходя в выключенное состояние, и только если реально играет:
+            // onepause сам ПЕРЕКЛЮЧАЕТ play/pause (не имеет отдельной команды "только пауза"),
+            // так что при уже стоящей паузе эта же команда включила бы воспроизведение обратно
+            pausedByPowerOff = false;
+            if (arylicTrackIsPlaying()) {
+              if (arylicSendPlayerCommand("onepause")) {
+                arylicNotifyOnepausePressed();
+                pausedByPowerOff = true;
+              }
+            }
+          } else if (pausedByPowerOff) {
+            // Возобновляем, только если паузу поставили именно мы при выключении (см.
+            // pausedByPowerOff выше) — иначе рискуем запустить музыку, которую пользователь
+            // сам поставил на паузу заранее, ещё до выключения
+            if (arylicSendPlayerCommand("onepause")) {
+              arylicNotifyOnepausePressed();
+            }
+            pausedByPowerOff = false;
+          }
+        }
         break;
       }
     }
@@ -526,7 +598,9 @@ static void handleStatus() {
   if (lastActionSent != '\0') {
     status += lastActionSent;
   }
-  status += "\"}";
+  status += "\",\"poweredOff\":";
+  status += webPoweredOff ? "true" : "false";
+  status += "}";
   server.send(200, "application/json", status);
 }
 
