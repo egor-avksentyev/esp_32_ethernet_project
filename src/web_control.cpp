@@ -156,7 +156,7 @@ static const char PAGE_HTML[] PROGMEM =
   // именно иконку (play/pause, в зависимости от j.playing), не трогая остальное. Не один и тот
   // же значок на обе стороны — см. комментарий у pollTrack() за тем, почему теперь можно
   // показывать именно текущее состояние, а не нейтральный комбинированный символ
-  "<button id=playPauseBtn class=playerBtn onclick=playerCmd('onepause',this)>"
+  "<button id=playPauseBtn class=playerBtn onclick=togglePlayPause(this)>"
   "<span id=playPauseIcon>"
   "<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'><path d='M5 3L20 12L5 21Z'></path></svg>"
   "</span></button>"
@@ -337,6 +337,23 @@ static const char PAGE_HTML[] PROGMEM =
   "<path d='M5 3L20 12L5 21Z'></path></svg>`;"
   "const PAUSE_ICON=`<svg viewBox='0 0 24 24' width='18' height='18' fill='currentColor'>"
   "<rect x='5' y='3' width='5' height='18'></rect><rect x='14' y='3' width='5' height='18'></rect></svg>`;"
+  // Общая для двух источников правды: реального ответа /track (pollTrack() ниже, раз в 500мс)
+  // И самого нажатия на кнопку play/pause (см. togglePlayPause() — реагирует МГНОВЕННО на
+  // клик, не дожидаясь следующего опроса) — иконка/пластинка/эквалайзер обновляются одним и
+  // тем же кодом в обоих случаях, не дублируются
+  "function updatePlayVisuals(playing){"
+  "document.getElementById('playPauseIcon').innerHTML=playing?PAUSE_ICON:PLAY_ICON;"
+  "document.getElementById('trackArt').style.animationPlayState=playing?'running':'paused';"
+  "document.getElementById('equalizer').classList.toggle('playing',playing)}"
+  // Реагирует на САМ клик по кнопке, а не ждёт следующего опроса /track (до 500мс задержки) —
+  // сразу переключает локально запомненное состояние и перерисовывает иконку/анимации, а уже
+  // потом отправляет реальную команду. Если сервер потом пришлёт другое (например пауза не
+  // применилась из-за сбоя связи) — pollTrack() всё равно поправит на следующем опросе, эта
+  // оптимистичная перерисовка — только ради мгновенного отклика на нажатие
+  "function togglePlayPause(btn){"
+  "trackPlayingNow=!trackPlayingNow;"
+  "updatePlayVisuals(trackPlayingNow);"
+  "playerCmd('onepause',btn)}"
   // hasTrack — трек ли играет ПРЯМО СЕЙЧАС, или он просто на паузе (j.text/j.art остаются
   // заполнены сервером и на паузе, см. arylic_metadata.cpp, ветка "не играет" — очищаются
   // только когда Arylic реально пропал из сети, не на обычной паузе кнопкой Play/Pause).
@@ -344,7 +361,7 @@ static const char PAGE_HTML[] PROGMEM =
   // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
   "trackPlayingNow=j.playing;trackLen=j.len;"
-  "document.getElementById('playPauseIcon').innerHTML=j.playing?PAUSE_ICON:PLAY_ICON;"
+  "updatePlayVisuals(j.playing);"
   // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
   // и эта строка каждые 500мс безусловно перезаписывала trackPos/trackFetchTime сырыми
   // серверными данными, включая момент сразу после перемотки, пока Arylic/бэкграунд-опрос
@@ -379,10 +396,6 @@ static const char PAGE_HTML[] PROGMEM =
   "let art=document.getElementById('trackArt');"
   "if(j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
   "else{art.style.display='none'}"
-  // Пластинка крутится/эквалайзер прыгает, только пока реально играет — та же логика, что и у
-  // иконки play/pause выше (j.playing, с той же оговоркой про AirPlay из её комментария)
-  "art.style.animationPlayState=j.playing?'running':'paused';"
-  "document.getElementById('equalizer').classList.toggle('playing',j.playing);"
   "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
   "function tickTrack(){"
   "document.getElementById('trackSeek').max=trackLen;"
