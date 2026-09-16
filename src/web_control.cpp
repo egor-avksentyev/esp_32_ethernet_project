@@ -71,6 +71,15 @@ static const char PAGE_HTML[] PROGMEM =
   // что у иконки play/pause и эквалайзера ниже), пластинка не крутится на паузе
   "#trackArt{border-radius:50%;object-fit:cover;animation:spin 20s linear infinite;animation-play-state:paused}"
   "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"
+  // Заглушка обложки — источники без своей картинки (AirPlay/Apple Music, см.
+  // arylic_metadata.h) её никогда не отдают. Тот же кружок и та же анимация spin, что у
+  // #trackArt (см. pollTrack() — только один из двух показан одновременно), просто вместо
+  // картинки серый полупрозрачный ободок с названием источника внутри — вращается вместе с
+  // текстом, как настоящая пластинка с наклейкой по центру
+  "#trackArtPlaceholder{width:200px;height:200px;margin:0 auto 6px;border-radius:50%;"
+  "border:3px solid rgba(160,160,160,.4);display:none;align-items:center;justify-content:center;"
+  "animation:spin 20s linear infinite;animation-play-state:paused}"
+  "#trackArtPlaceholder span{color:rgba(160,160,160,.6);font-size:1.1em;text-align:center;padding:0 12px}"
   // Прыгающий эквалайзер слева экрана — position:fixed на всю высоту вьюпорта (виден всегда,
   // не часть потока страницы), pointer-events:none — чтобы не перехватывал тапы/клики по
   // реальным элементам управления под ним. Горизонтальные (растут в ширину от левого края) —
@@ -136,6 +145,7 @@ static const char PAGE_HTML[] PROGMEM =
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt style='display:none;width:200px;height:200px;margin:0 auto 6px'>"
+  "<div id=trackArtPlaceholder><span id=trackArtPlaceholderText></span></div>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:2.1em;color:#ccc;margin-bottom:4px'></div>"
   "<div id=trackProgress>"
@@ -413,7 +423,9 @@ static const char PAGE_HTML[] PROGMEM =
   // тем же кодом в обоих случаях, не дублируются
   "function updatePlayVisuals(playing){"
   "document.getElementById('playPauseIcon').innerHTML=playing?PAUSE_ICON:PLAY_ICON;"
-  "document.getElementById('trackArt').style.animationPlayState=playing?'running':'paused';"
+  "let state=playing?'running':'paused';"
+  "document.getElementById('trackArt').style.animationPlayState=state;"
+  "document.getElementById('trackArtPlaceholder').style.animationPlayState=state;"
   "document.getElementById('equalizer').classList.toggle('playing',playing)}"
   // playPauseExpected/-Since — pollTrack() ниже игнорирует любой ответ /track, не совпадающий
   // с этим ожиданием, пока оно не подтвердится (или не протухнет по таймауту). Раньше вместо
@@ -455,26 +467,30 @@ static const char PAGE_HTML[] PROGMEM =
   "let t=document.getElementById('trackTitle');"
   "if(j.text){t.innerText=j.text;t.style.display='block'}else{t.style.display='none'}"
   // Источник (Spotify/AirPlay/...) — отдельная строка, показывается независимо от того,
-  // распарсились ли title/artist (AirPlay их не отдаёт вообще, но источник знать можно)
-  // Крупно — когда title/artist нет вообще (AirPlay, trackTitle тогда скрыт выше): это
-  // единственный видимый текст "что сейчас играет". Размер задаём JS-ом напрямую в
-  // src.style, а не CSS-классом — у элемента уже есть встроенный style='font-size:...'
-  // (задаёт БАЗОВЫЙ маленький размер), а инлайновый style всегда перебивает правило класса
-  // из <style>, так что class.toggle тут ни на что не влиял
+  // распарсились ли title/artist (AirPlay их не отдаёт вообще, но источник знать можно).
+  // Раньше без обложки (AirPlay) эта строка была единственным видимым текстом и показывалась
+  // крупным/жирным — теперь эту роль вместо неё играет #trackArtPlaceholder ниже (тот же
+  // текст, крутится в кружке вместо обложки), так что здесь всегда обычный маленький размер
   "let src=document.getElementById('trackSource');"
-  "if(j.source){src.innerText=j.source;src.style.display='block';"
-  "src.style.fontSize=j.text?'.8em':'2.1em';"
-  "src.style.fontWeight=j.text?'normal':'bold'}"
+  "if(j.source){src.innerText=j.source;src.style.display='block'}"
   "else{src.style.display='none'}"
   // Позиция трека для AirPlay не двигается вообще (устройство её не отдаёт ни в одном
   // известном API, проверено live — см. arylic_metadata.h) — полоска бы просто застыла на
   // месте и вводила в заблуждение, поэтому для этого источника прячем её целиком
   "document.getElementById('trackProgress').style.display=(j.source==='AirPlay')?'none':'block';"
   // Обложка отдаётся ссылкой на CDN сервиса-источника, не байтами — сам img её и грузит.
-  // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h)
+  // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h) —
+  // тогда вместо неё #trackArtPlaceholder (см. <style> выше) с названием источника внутри,
+  // тот же кружок/анимация, что и у настоящей обложки, только один из двух виден одновременно
   "let art=document.getElementById('trackArt');"
-  "if(j.art){if(art.src!==j.art)art.src=j.art;art.style.display='block'}"
-  "else{art.style.display='none'}"
+  "let placeholder=document.getElementById('trackArtPlaceholder');"
+  "if(j.art){"
+  "if(art.src!==j.art)art.src=j.art;"
+  "art.style.display='block';placeholder.style.display='none'"
+  "}else if(j.source){"
+  "art.style.display='none';placeholder.style.display='flex';"
+  "document.getElementById('trackArtPlaceholderText').innerText=j.source"
+  "}else{art.style.display='none';placeholder.style.display='none'}"
   "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
   "function tickTrack(){"
   "document.getElementById('trackSeek').max=trackLen;"
