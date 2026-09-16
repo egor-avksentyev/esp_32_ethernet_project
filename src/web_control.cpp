@@ -212,7 +212,7 @@ static const char PAGE_HTML[] PROGMEM =
   // живом устройстве). Mega ничего не подтверждает обратно (UART в одну сторону, см. README) —
   // это лишь оценка сверху для индикации, не гарантия: если Mega освободится позже, кнопка
   // просто станет активной чуть раньше, чем реально сработает
-  "const MEGA_POWEROFF_BUSY_MS=9000;"
+  "const MEGA_POWEROFF_BUSY_MS=12000;"
   "let megaBusyUntil=0;"
   "function powerOffClick(){megaBusyUntil=Date.now()+MEGA_POWEROFF_BUSY_MS;cmd('power')}"
   "function updatePowerOnBtn(){"
