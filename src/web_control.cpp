@@ -57,13 +57,16 @@ static const char PAGE_HTML[] PROGMEM =
   "button.pending{opacity:.5}"
   "select{font-size:.85em;background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:4px 6px}"
   "#status{margin:12px;font-size:1.1em;color:#8cf}"
-  "#remoteToggle{font-size:1em;padding:10px 18px}"
+  // Тот же приём выезжания — теперь у двух независимых раскрывашек (Remote Control и
+  // Settings, см. #settingsToggle/#settingsCollapse ниже) — общие правила через запятую,
+  // а не два одинаковых набора под каждый ID
+  "#remoteToggle,#settingsToggle{font-size:1em;padding:10px 18px}"
   // Плавное сворачивание/разворачивание без JS-измерения высоты — CSS Grid с
   // grid-template-rows: 0fr -> 1fr, стандартный приём для анимации "auto height", которую
   // обычный max-height/transition сделать плавной не может без знания реальной высоты контента
-  "#remoteCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
-  "#remoteCollapse.open{grid-template-rows:1fr}"
-  "#remoteCollapse>div{overflow:hidden}"
+  "#remoteCollapse,#settingsCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
+  "#remoteCollapse.open,#settingsCollapse.open{grid-template-rows:1fr}"
+  "#remoteCollapse>div,#settingsCollapse>div{overflow:hidden}"
   // Обложка — круглая (как пластинка), крутится сама по себе, пока показана. object-fit:cover
   // держит квадратный кроп даже если реальное изображение с CDN окажется не идеально квадратным
   // (border-radius:50% на не-квадратной картинке дал бы эллипс, а не круг). animation-play-state
@@ -126,8 +129,9 @@ static const char PAGE_HTML[] PROGMEM =
   "<div id=mainContent>"
   // Тембр-блок (левая/правая/энтер, вверх/вниз, mute/source/power) теперь скрыт за этой
   // кнопкой — раньше был всегда виден под заголовком "Preamp Remote Control", теперь сам
-  // заголовок стал кнопкой-раскрывашкой (см. toggleRemote()/#remoteCollapse в <style>)
-  "<button id=remoteToggle onclick=toggleRemote()><span data-i18n=remoteControl>Remote Control</span></button>"
+  // заголовок стал кнопкой-раскрывашкой (см. toggleCollapse()/#remoteCollapse в <style>)
+  "<button id=remoteToggle onclick=toggleCollapse('remoteCollapse')>"
+  "<span data-i18n=remoteControl>Remote Control</span></button>"
   "<div id=remoteCollapse><div>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
@@ -198,10 +202,17 @@ static const char PAGE_HTML[] PROGMEM =
   "<input id=volSlider type=range min=0 max=100 value=50 style='width:18%;touch-action:none' "
   "oninput='volDragging=true' onchange=setVolume(this.value)>"
   "</div></div>"
+  // IP Arylic вручную и смена Wi-Fi — редко нужные настройки, не часть повседневного
+  // управления, поэтому спрятаны за той же раскрывашкой, что и Remote Control выше (см.
+  // toggleCollapse()/#settingsCollapse в <style>), а не всегда на виду под плеером
+  "<button id=settingsToggle onclick=toggleCollapse('settingsCollapse')>"
+  "<span data-i18n=settings>Settings</span></button>"
+  "<div id=settingsCollapse><div>"
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp() data-i18n=apply>Применить</button></div>"
   "<div><button onclick=forgetWifi() style='background:#733' data-i18n=changeWifi>Сменить Wi-Fi</button></div>"
+  "</div></div>"
   "</div>"
   // Показывается вместо #mainContent, пока выключено (см. applyPowerState()) — большая круглая
   // кнопка по центру экрана, только она и включает систему обратно. inset:0 — та же самая
@@ -212,6 +223,9 @@ static const char PAGE_HTML[] PROGMEM =
   "style='width:140px;height:140px;border-radius:50%;font-size:1.05em;line-height:1.3'>"
   "<span id=powerOnLabel data-i18n=powerOn>Power On</span></button>"
   "</div>"
+  // Подпись — вне #mainContent/#powerOffScreen, видна всегда независимо от состояния питания
+  "<div style='text-align:center;font-size:.7em;color:#666;margin:20px 0 8px'>"
+  "Designed and Developed by Egor Avksentyev &amp; Sergey Ladnov</div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
   // Mega физически довозит Bass/High/Volume к нулю и держит 3с экран "POWER OFF" ПЕРЕД тем,
@@ -239,7 +253,7 @@ static const char PAGE_HTML[] PROGMEM =
   "let holdTimer=null;"
   "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),150)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
-  "function toggleRemote(){document.getElementById('remoteCollapse').classList.toggle('open')}"
+  "function toggleCollapse(id){document.getElementById(id).classList.toggle('open')}"
   // Много столбиков на всю высоту, не 5 — иначе не похоже на настоящий эквалайзер. Генерируем
   // через JS, а не перечисляем вручную десятки CSS-правил nth-child(N): top равномерно по
   // всей высоте, длительность/задержка анимации — со случайным разбросом (иначе все столбики
@@ -258,7 +272,7 @@ static const char PAGE_HTML[] PROGMEM =
   // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
   "const I18N={"
-  "ru:{remoteControl:'Пульт',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
+  "ru:{remoteControl:'Пульт',settings:'Настройки',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
   "powerOn:'Включить',poweringOff:'Выключение',"
   "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
@@ -270,7 +284,7 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Ледяной дождь',snow:'Снег',heavySnow:'Сильный снег',snowGrains:'Снежная крупа',"
   "showers:'Ливень',heavyShowers:'Сильный ливень',snowShowers:'Снегопад',thunder:'Гроза',"
   "thunderHail:'Гроза с градом'}},"
-  "uk:{remoteControl:'Пульт',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
+  "uk:{remoteControl:'Пульт',settings:'Налаштування',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
   "powerOn:'Увімкнути',poweringOff:'Вимкнення',"
   "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
@@ -282,7 +296,7 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Крижаний дощ',snow:'Сніг',heavySnow:'Сильний сніг',snowGrains:'Снігова крупа',"
   "showers:'Злива',heavyShowers:'Сильна злива',snowShowers:'Снігопад',thunder:'Гроза',"
   "thunderHail:'Гроза з градом'}},"
-  "ro:{remoteControl:'Telecomandă',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
+  "ro:{remoteControl:'Telecomandă',settings:'Setări',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
   "powerOn:'Pornește',poweringOff:'Se oprește',"
   "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
@@ -294,7 +308,7 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
   "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
   "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}},"
-  "en:{remoteControl:'Remote Control',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
+  "en:{remoteControl:'Remote Control',settings:'Settings',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
   "powerOn:'Power On',poweringOff:'Powering off',"
   "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
