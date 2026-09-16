@@ -60,29 +60,21 @@ static const char PAGE_HTML[] PROGMEM =
   "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"
   // Прыгающий эквалайзер слева экрана — position:fixed на всю высоту вьюпорта (виден всегда,
   // не часть потока страницы), pointer-events:none — чтобы не перехватывал тапы/клики по
-  // реальным элементам управления под ним. Столбики — position:absolute внутри этого
-  // контейнера, каждый на своей высоте (top в %, от 8% до 88% — равномерно сверху вниз по
-  // всему экрану), а не все прижаты к одному краю: раньше все 5 сидели в одном углу единым
-  // кластером. Горизонтальные (растут в ширину от левого края, не в высоту) — вертикальные
-  // тонкие столбики было плохо видно; серый и полупрозрачный (rgba, не #8cf) — чтобы
-  // сочетался с чёрным фоном, а не бросался в глаза ярким цветом. Каждый — своя длительность/
-  // задержка анимации, иначе скакали бы синхронно, как один столбик. 1см — реальная
+  // реальным элементам управления под ним. Горизонтальные (растут в ширину от левого края) —
+  // вертикальные тонкие столбики было плохо видно; серый и полупрозрачный (rgba, не #8cf) —
+  // чтобы сочетался с чёрным фоном, а не бросался в глаза ярким цветом. 1см — реальная
   // физическая единица CSS (не px) — сама переводится браузером в пиксели под фактическое
-  // разрешение экрана, ровно то ограничение, что попросили
+  // разрешение экрана, ровно то ограничение, что попросили. Сами столбики (много, на всю
+  // высоту) генерируются в JS (см. buildEqualizer() ниже) — вручную перечислять десятки
+  // nth-child правил тут не стоило бы своей сложности
   "#equalizer{position:fixed;left:0;top:0;height:100vh;width:1cm;pointer-events:none}"
   "#equalizer .eqBar{position:absolute;left:0;height:4px;background:rgba(160,160,160,.4);"
   "border-radius:2px;width:3px;animation:eqBounce 1s ease-in-out infinite;animation-play-state:paused}"
   // Как и у трека выше — крутится/скачет, только пока реально играет
   "#equalizer.playing .eqBar{animation-play-state:running}"
-  "#equalizer .eqBar:nth-child(1){top:8%;animation-duration:.8s;animation-delay:0s}"
-  "#equalizer .eqBar:nth-child(2){top:28%;animation-duration:1.1s;animation-delay:.15s}"
-  "#equalizer .eqBar:nth-child(3){top:48%;animation-duration:.9s;animation-delay:.3s}"
-  "#equalizer .eqBar:nth-child(4){top:68%;animation-duration:1.2s;animation-delay:.05s}"
-  "#equalizer .eqBar:nth-child(5){top:88%;animation-duration:1s;animation-delay:.25s}"
   "@keyframes eqBounce{0%,100%{width:3px}50%{width:1cm}}"
   "</style></head><body>"
-  "<div id=equalizer><div class=eqBar></div><div class=eqBar></div><div class=eqBar></div>"
-  "<div class=eqBar></div><div class=eqBar></div></div>"
+  "<div id=equalizer></div>"
   // justify-content:space-between — слева выбор языка, справа дата/погода (было flex-end,
   // держало только правый блок). max-width на правом блоке — чтобы длинное название города
   // не растягивало его на всю ширину экрана, а переносилось внутри своих 55%
@@ -187,6 +179,20 @@ static const char PAGE_HTML[] PROGMEM =
   "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),150)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
   "function toggleRemote(){document.getElementById('remoteCollapse').classList.toggle('open')}"
+  // Много столбиков на всю высоту, не 5 — иначе не похоже на настоящий эквалайзер. Генерируем
+  // через JS, а не перечисляем вручную десятки CSS-правил nth-child(N): top равномерно по
+  // всей высоте, длительность/задержка анимации — со случайным разбросом (иначе все столбики
+  // скакали бы синхронно, одной волной, а не вразнобой, как у настоящего эквалайзера)
+  "(function buildEqualizer(){"
+  "let eq=document.getElementById('equalizer');"
+  "let count=30;"
+  "for(let i=0;i<count;i++){"
+  "let bar=document.createElement('div');bar.className='eqBar';"
+  "bar.style.top=((i+.5)/count*100)+'%';"
+  "bar.style.animationDuration=(.6+Math.random()*.8)+'s';"
+  "bar.style.animationDelay=(Math.random()*.7)+'s';"
+  "eq.appendChild(bar)}"
+  "})();"
   // Все три языка целиком на клиенте — переключение мгновенное, без похода на сервер и без
   // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
