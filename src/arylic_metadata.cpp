@@ -607,13 +607,20 @@ static void pollArylicMetadataOnce() {
   if (title[0] == '\0' && artist[0] == '\0') {
     Serial.println("[arylic] играет, но Title/Artist не найдены в ответе — сырой ответ:");
     Serial.println(payload);
-    // Без этого trackText оставался бы текстом ПРЕДЫДУЩЕГО трека (static-буфер, никто его
-    // не очищал в этой ветке) — вводит в заблуждение, будто метадата и правда пришла.
-    // AirPlay не отдаёт метадату вообще, ни у нас, ни в родном приложении производителя
-    // (проверено live, см. project_arylic_airplay_no_metadata в памяти) — но название
-    // источника уже отправлено выше (megaLinkSendSource), этого тут достаточно
-    MutexGuard g(stateMutex);
-    trackText[0] = '\0';
+    // Без этого trackText/nowPlayingText (на Mega) оставались бы текстом ПРЕДЫДУЩЕГО трека
+    // (static-буферы, никто их не очищал в этой ветке) — вводит в заблуждение, будто метадата
+    // и правда пришла. AirPlay не отдаёт метадату вообще, ни у нас, ни в родном приложении
+    // производителя (проверено live, см. project_arylic_airplay_no_metadata в памяти) — но
+    // название источника уже отправлено выше (megaLinkSendSource), этого тут достаточно.
+    // Раньше megaLinkSendMetadata("") тут не вызывался вообще — если до этого играл трек С
+    // метадатой (например Spotify), а следующий источник её не отдаёт (AirPlay), Mega
+    // продолжала показывать СТАРОЕ название трека на Now Playing бесконечно, пока метадата
+    // случайно не придёт снова
+    {
+      MutexGuard g(stateMutex);
+      trackText[0] = '\0';
+    }
+    megaLinkSendMetadata("");
     return;
   }
 
