@@ -405,9 +405,13 @@ static const char PAGE_HTML[] PROGMEM =
   // только когда Arylic реально пропал из сети, не на обычной паузе кнопкой Play/Pause).
   // Поэтому обложку/заголовок/источник показываем по наличию данных, а не по j.playing —
   // иначе они бы гасли на каждую паузу, что и так видно на паузе (не нужно)
+  // Та же гонка, что у volDragging/trackSeekDragging ниже — пока playerCmdBusy (наша же
+  // onepause-команда ещё в полёте к Arylic, ~1.5-2с), этот опрос всё ещё возвращает СТАРОЕ
+  // серверное состояние и перетирал бы только что применённую оптимистичную иконку обратно,
+  // пока реальная команда не долетит — отсюда и было "прыгает туда-сюда, потом стабилизируется"
   "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
-  "trackPlayingNow=j.playing;trackLen=j.len;"
-  "updatePlayVisuals(j.playing);"
+  "trackLen=j.len;"
+  "if(!playerCmdBusy){trackPlayingNow=j.playing;updatePlayVisuals(j.playing)}"
   // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
   // и эта строка каждые 500мс безусловно перезаписывала trackPos/trackFetchTime сырыми
   // серверными данными, включая момент сразу после перемотки, пока Arylic/бэкграунд-опрос
