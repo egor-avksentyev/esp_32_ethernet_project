@@ -478,6 +478,11 @@ static void pollArylicMetadataOnce() {
   // достаточно, чтобы отфильтровать единичный дребезг, но не настолько долго, чтобы заметно
   // задержать честное обнаружение реальной потери связи
   static uint8_t consecutiveFailCount = 0;
+  // См. применение ниже, у проверки по позиции трека — держим здесь, у остальных
+  // static-счётчиков этой функции, чтобы можно было сбросить в ветке "устройство недоступно"
+  // ниже (иначе устаревшее значение могло бы ложно "подтвердить" воспроизведение после
+  // переподключения к другому треку/устройству)
+  static long lastPlayingPosMs = -1; // -1 — ещё ни разу не видели точно играющим
   if (httpCode != HTTP_CODE_OK) {
     consecutiveFailCount++;
     Serial.print("[arylic] запрос не удался, код: ");
@@ -509,6 +514,7 @@ static void pollArylicMetadataOnce() {
     // считать, что не играет (иначе Mega может застрять в режиме Now Playing/Streamer
     // навсегда, если Arylic пропал из сети посреди воспроизведения)
     megaLinkSendPlayState(false);
+    lastPlayingPosMs = -1;
     return;
   }
   consecutiveFailCount = 0;
@@ -532,6 +538,7 @@ static void pollArylicMetadataOnce() {
   bool playing = payload.indexOf("\"status\":\"play\"") >= 0;
   char currentMode[8];
   extractStringField(payload, "\"mode\":\"", currentMode, sizeof(currentMode));
+  bool overrideActiveNow;
   {
     // "status" врёт для AirPlay (см. project_arylic_airplay_no_metadata в памяти) — если
     // пользователь только что нажал нашу же кнопку play/pause (arylicNotifyOnepausePressed()),
@@ -555,6 +562,35 @@ static void pollArylicMetadataOnce() {
         playing = playOverrideValue;
       }
     }
+    overrideActiveNow = playOverrideActive;
+  }
+
+  // Живой пример 2026-09-17: Spotify Connect (mode 31, оверрайд тут ни при чём) один раз
+  // отдал "status" не "play" на ОДИН опрос, хотя стрим реально не прерывался — LinkPlay API
+  // (см. https://github.com/AndersFluur/LinkPlayApi) допускает "load" как промежуточное
+  // значение status (не только "play"/"pause"/"stop") — то есть это не обязательно "вранье",
+  // а честное краткое переходное состояние (буферизация и т.п.), которое сам факт
+  // непрерывности звука не отражает.
+  //
+  // Если позиция трека (curpos) всё равно продолжила расти с прошлого раза, когда точно
+  // играло — значит звук физически не мог остановиться сам по себе, "status" тут явно
+  // врёт/про краткий "load", доверяем позиции. Работает только для источников, где curpos
+  // вообще двигается (не AirPlay — тот идёт через оверрайд выше и сюда не попадает, см.
+  // project_arylic_airplay_no_metadata в памяти).
+  //
+  // Раньше здесь ещё был дебаунс "N опросов подряд с не-play, прежде чем считать паузу
+  // настоящей" (PLAY_STOP_DEBOUNCE_STREAK) — задумывался как вторая линия защиты на случай,
+  // если позиция не помогла. Убран: переключение трека (Next/Prev) на Spotify Connect обычно
+  // само занимает больше одного опроса на буферизацию — тот же класс "не play", что и
+  // изначальный баг, только НАСТОЯЩИЙ разрыв, не вранье. Дебаунс держал реле/экран Streamer
+  // в подвешенном состоянии на это время, а потом всё равно резко переключал туда-сюда —
+  // выглядело как подтормаживание при каждом свайпе трека, чаще и заметнее, чем спасало
+  long curposNow = extractLongField(payload, "\"curpos\":\"");
+  if (!overrideActiveNow && !playing && lastPlayingPosMs >= 0 && curposNow > lastPlayingPosMs) {
+    playing = true;
+  }
+  if (playing) {
+    lastPlayingPosMs = curposNow;
   }
   megaLinkSendPlayState(playing);
   if (!playing) {
@@ -571,8 +607,8 @@ static void pollArylicMetadataOnce() {
 
   // curpos/totlen обновляем независимо от того, распарсятся ли Title/Artist ниже —
   // это отдельные поля того же ответа, прогресс-бар веб-страницы не должен зависеть
-  // от успеха разбора текста трека
-  long newPosMs = extractLongField(payload, "\"curpos\":\"");
+  // от успеха разбора текста трека. curposNow уже извлечён выше (для проверки по позиции)
+  long newPosMs = curposNow;
   long newLenMs = extractLongField(payload, "\"totlen\":\"");
   megaLinkSendPosition(newPosMs, newLenMs);
 
