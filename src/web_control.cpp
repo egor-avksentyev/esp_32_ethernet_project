@@ -47,8 +47,12 @@ static const char PAGE_HTML[] PROGMEM =
   "body{font-family:sans-serif;text-align:center;background:#111;color:#eee}"
   // touch-action:manipulation — убирает задержку/жест двойного тапа-зума на мобильных браузерах,
   // из-за которой быстрый второй тап по кнопке мог не долетать до click вообще (актуально для
-  // playerCmd() — двойной клик на "назад" должен реально дойти как два отдельных клика)
-  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;background:#333;color:#eee;touch-action:manipulation}"
+  // playerCmd() — двойной клик на "назад" должен реально дойти как два отдельных клика).
+  // -webkit-touch-callout/user-select:none — на iOS долгое удержание кнопки (см. startHold() у
+  // Up/Down — именно она держится дольше обычного клика) без этого триггерит системное меню
+  // выделения/копирования текста поверх кнопки, перехватывая жест вместо повторного вызова cmd()
+  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;background:#333;color:#eee;"
+  "touch-action:manipulation;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}"
   "button:active{background:#555}"
   "button:disabled{opacity:.5}"
   // Класс, не атрибут disabled — на реально disabled-кнопке браузер вообще не диспетчеризует
@@ -67,22 +71,93 @@ static const char PAGE_HTML[] PROGMEM =
   "#remoteCollapse,#settingsCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
   "#remoteCollapse.open,#settingsCollapse.open{grid-template-rows:1fr}"
   "#remoteCollapse>div,#settingsCollapse>div{overflow:hidden}"
-  // Обложка — круглая (как пластинка), крутится сама по себе, пока показана. object-fit:cover
+  // Обложка — три темы на выбор (см. #artThemeSelect/applyArtTheme() ниже), выбор живёт в
+  // localStorage (per-viewer, как язык). .themeCircle — модификатор "как пластинка": круглая,
+  // крутится, пока играет (см. pollTrack()/updatePlayVisuals()). Без этого класса (тема
+  // "квадрат") — обычный статичный квадрат, animation тут вообще не задан, так что
+  // animationPlayState на этот элемент в JS просто ни на что не влияет. object-fit:cover
   // держит квадратный кроп даже если реальное изображение с CDN окажется не идеально квадратным
-  // (border-radius:50% на не-квадратной картинке дал бы эллипс, а не круг). animation-play-state
-  // по умолчанию paused — крутится, только пока реально играет (см. pollTrack(), та же логика,
-  // что у иконки play/pause и эквалайзера ниже), пластинка не крутится на паузе
-  "#trackArt{border-radius:50%;object-fit:cover;animation:spin 20s linear infinite;animation-play-state:paused}"
+  "#trackArt{width:200px;height:200px;margin:0 auto 6px;object-fit:cover;display:none}"
+  "#trackArt.themeCircle{border-radius:50%;animation:spin 20s linear infinite;animation-play-state:paused}"
   "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}"
   // Заглушка обложки — источники без своей картинки (AirPlay/Apple Music, см.
-  // arylic_metadata.h) её никогда не отдают. Тот же кружок и та же анимация spin, что у
-  // #trackArt (см. pollTrack() — только один из двух показан одновременно), просто вместо
-  // картинки серый полупрозрачный ободок с названием источника внутри — вращается вместе с
-  // текстом, как настоящая пластинка с наклейкой по центру
-  "#trackArtPlaceholder{width:200px;height:200px;margin:0 auto 6px;border-radius:50%;"
-  "border:3px solid rgba(160,160,160,.4);display:none;align-items:center;justify-content:center;"
-  "animation:spin 20s linear infinite;animation-play-state:paused}"
+  // arylic_metadata.h) её никогда не отдают. Кубическую тему для заглушки не делаем (текст на
+  // гранях без картинки смысла не имеет) — вместо неё всегда эта же круглая/квадратная заглушка,
+  // см. renderArt(): для темы "куб" используется её же круглый вариант
+  "#trackArtPlaceholder{width:200px;height:200px;margin:0 auto 6px;"
+  "border:3px solid rgba(160,160,160,.4);display:none;align-items:center;justify-content:center}"
+  "#trackArtPlaceholder.themeCircle{border-radius:50%;animation:spin 20s linear infinite;animation-play-state:paused}"
   "#trackArtPlaceholder span{color:rgba(160,160,160,.6);font-size:1.1em;text-align:center;padding:0 12px}"
+  // 3D-куб — крутится "на месте" (сам куб не смещается по экрану — ось вращения проходит
+  // через его геометрический ЦЕНТР, как обычно у 3D-трансформаций), но эта ось — не вертикаль
+  // и не горизонталь, а ПРОСТРАНСТВЕННАЯ ДИАГОНАЛЬ куба (через два противоположных угла из
+  // восьми — то самое "вращение на углу", которое просили, только без побочного качания влево-
+  // вправо, которое давал предыдущий вариант с осью по грани). Грани строятся стандартным
+  // приёмом (rotateY(угол)+translateZ(половина стороны), см. cubeFace.f0..f3) вокруг обычного
+  // центра #trackArtCubeInner (transform-origin по умолчанию, не переопределяем) — только 4
+  // боковые грани, верх/низ всё равно никогда не видны под этим углом обзора.
+  //
+  // Как это устроено (см. @keyframes cubeSpin): CSS не умеет "вращать вокруг произвольной оси"
+  // одной функцией, поэтому раскладываем на пять — сначала двумя поворотами (rotateZ+rotateY)
+  // разворачиваем систему координат так, что телесная диагональ куба совпадает с осью Y, потом
+  // крутим по НЕЙ обычным rotateY (это и есть анимируемый угол), и в конце теми же двумя
+  // поворотами в обратную сторону возвращаем куб в исходную ориентацию на экране (чтобы при
+  // angle=0 он выглядел обычным ровным кубом, а не перекошенным). Угол 54.7356deg — это
+  // arccos(1/√3), "магический угол" между диагональю куба и его гранью, известная константа для
+  // этого приёма, не подбор на глаз
+  // Контейнер куба (#trackArtCube) — 264px, крупнее, чем у круга/квадрата (200px) специально:
+  // сама грань куба (F=144px) заметно меньше своего контейнера с запасом, чтобы даже самая
+  // дальняя точка куба (угол, на расстоянии половины пространственной диагонали от центра,
+  // F*√3/2 ≈ 125px при F=144) не доставала до края контейнера (радиус 132px) — overflow:hidden
+  // ниже всё равно подстраховывает на случай перспективных искажений по краям
+  "#trackArtCube{width:264px;height:264px;margin:0 auto 6px;perspective:700px;"
+  "display:none;position:relative;overflow:hidden}"
+  "#trackArtCubeInner{width:144px;height:144px;position:absolute;left:50%;top:50%;"
+  "margin-left:-72px;margin-top:-72px;transform-style:preserve-3d;"
+  "animation:cubeSpin 12s linear infinite;animation-play-state:paused}"
+  "#trackArtCubeInner .cubeFace{position:absolute;top:0;left:0;width:144px;height:144px;"
+  "background-size:cover;background-position:center;background-color:#333;backface-visibility:hidden}"
+  // f0-f3 — 4 боковые грани (перед/право/зад/лево), f4/f5 — верх/низ. Раньше вращение шло
+  // только вокруг вертикали (rotateY), и верх/низ никогда не были видны, поэтому их не строили
+  // вовсе — с вращением вокруг диагонали куба (см. @keyframes cubeSpin ниже) куб временами
+  // наклоняется и по X/Z тоже, и без этих двух граней в эти моменты сквозь куб было видно
+  // пустоту/фон контейнера (чёрные "дыры" на месте недостающих граней)
+  "#trackArtCubeInner .cubeFace.f0{transform:translateZ(72px)}"
+  "#trackArtCubeInner .cubeFace.f1{transform:rotateY(90deg) translateZ(72px)}"
+  "#trackArtCubeInner .cubeFace.f2{transform:rotateY(180deg) translateZ(72px)}"
+  "#trackArtCubeInner .cubeFace.f3{transform:rotateY(-90deg) translateZ(72px)}"
+  "#trackArtCubeInner .cubeFace.f4{transform:rotateX(90deg) translateZ(72px)}"
+  "#trackArtCubeInner .cubeFace.f5{transform:rotateX(-90deg) translateZ(72px)}"
+  "@keyframes cubeSpin{"
+  "from{transform:rotateY(-45deg) rotateZ(-54.7356deg) rotateY(0deg) rotateZ(54.7356deg) rotateY(45deg)}"
+  "to{transform:rotateY(-45deg) rotateZ(-54.7356deg) rotateY(360deg) rotateZ(54.7356deg) rotateY(45deg)}"
+  "}"
+  // 4-гранная пирамида — ось вращения проходит через вершину (rotateY на #trackArtPyramidInner,
+  // которая сама — точка нулевого размера в месте вершины, см. ниже), а раз вершина правильной
+  // пирамиды и так лежит на одной вертикали с центром основания, это и есть её обычная
+  // вертикальная ось симметрии — в отличие от куба, тут не нужен трюк с наклонной осью, обычный
+  // rotateY уже "крутится на месте".
+  //
+  // База (B=140px) и высота (H=150px) заданы так, чтобы боковая грань (треугольник, вырезанный
+  // clip-path из прямоугольника BxL) при развороте попадала под нужным углом: L — высота этого
+  // треугольника (расстояние от вершины до середины стороны основания, L=√(H²+(B/2)²)≈166px),
+  // угол наклона грани от вертикали — arctan((B/2)/H)≈25°. #trackArtPyramidInner — сама точка
+  // нулевого размера в вершине; каждая грань висит от неё вниз (transform-origin:50% 0% — верх
+  // грани = вершина), сперва наклоняется наружу на 25° (rotateX), потом разворачивается в одну
+  // из 4 сторон света (rotateY) — тот же порядок применения (снаружи внутрь: сначала то, что
+  // правее в списке), что и у translateZ+rotateY на гранях куба выше
+  "#trackArtPyramid{width:220px;height:220px;margin:0 auto 6px;perspective:700px;"
+  "display:none;position:relative;overflow:hidden}"
+  "#trackArtPyramidInner{position:absolute;left:50%;top:35px;width:0;height:0;"
+  "transform-style:preserve-3d;animation:pyramidSpin 12s linear infinite;animation-play-state:paused}"
+  "#trackArtPyramidInner .pyramidFace{position:absolute;left:-70px;top:0;width:140px;height:166px;"
+  "background-size:cover;background-position:center;background-color:#333;backface-visibility:hidden;"
+  "transform-origin:50% 0%;clip-path:polygon(50% 0%,0% 100%,100% 100%)}"
+  "#trackArtPyramidInner .pyramidFace.p0{transform:rotateY(0) rotateX(25deg)}"
+  "#trackArtPyramidInner .pyramidFace.p1{transform:rotateY(90deg) rotateX(25deg)}"
+  "#trackArtPyramidInner .pyramidFace.p2{transform:rotateY(180deg) rotateX(25deg)}"
+  "#trackArtPyramidInner .pyramidFace.p3{transform:rotateY(-90deg) rotateX(25deg)}"
+  "@keyframes pyramidSpin{from{transform:rotateY(0)}to{transform:rotateY(360deg)}}"
   // Прыгающий эквалайзер слева экрана — position:fixed на всю высоту вьюпорта (виден всегда,
   // не часть потока страницы), pointer-events:none — чтобы не перехватывал тапы/клики по
   // реальным элементам управления под ним. Горизонтальные (растут в ширину от левого края) —
@@ -148,8 +223,17 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onclick=powerOffClick() data-i18n=power>Power</button></div>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
-  "<img id=trackArt style='display:none;width:200px;height:200px;margin:0 auto 6px'>"
+  "<img id=trackArt>"
   "<div id=trackArtPlaceholder><span id=trackArtPlaceholderText></span></div>"
+  "<div id=trackArtCube><div id=trackArtCubeInner>"
+  "<div class='cubeFace f0'></div><div class='cubeFace f1'></div>"
+  "<div class='cubeFace f2'></div><div class='cubeFace f3'></div>"
+  "<div class='cubeFace f4'></div><div class='cubeFace f5'></div>"
+  "</div></div>"
+  "<div id=trackArtPyramid><div id=trackArtPyramidInner>"
+  "<div class='pyramidFace p0'></div><div class='pyramidFace p1'></div>"
+  "<div class='pyramidFace p2'></div><div class='pyramidFace p3'></div>"
+  "</div></div>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:2.1em;color:#ccc;margin-bottom:4px'></div>"
   "<div id=trackProgress>"
@@ -208,6 +292,14 @@ static const char PAGE_HTML[] PROGMEM =
   "<button id=settingsToggle onclick=toggleCollapse('settingsCollapse')>"
   "<span data-i18n=settings>Settings</span></button>"
   "<div id=settingsCollapse><div>"
+  "<div style='margin-top:14px'>"
+  "<span data-i18n=artTheme>Cover theme</span> "
+  "<select id=artThemeSelect onchange=applyArtTheme(this.value)>"
+  "<option value=circle data-i18n=artThemeCircle>Circle</option>"
+  "<option value=square data-i18n=artThemeSquare>Square</option>"
+  "<option value=cube data-i18n=artThemeCube>3D cube</option>"
+  "<option value=pyramid data-i18n=artThemePyramid>3D pyramid</option>"
+  "</select></div>"
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp() data-i18n=apply>Применить</button></div>"
@@ -272,7 +364,10 @@ static const char PAGE_HTML[] PROGMEM =
   // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
   "const I18N={"
-  "ru:{remoteControl:'Пульт',settings:'Настройки',ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
+  "ru:{remoteControl:'Пульт',settings:'Настройки',"
+  "artTheme:'Тема обложки:',artThemeCircle:'Круг (крутится)',artThemeSquare:'Квадрат (статично)',"
+  "artThemeCube:'3D-куб',artThemePyramid:'3D-пирамида',"
+  "ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
   "powerOn:'Включить',poweringOff:'Выключение',"
   "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
@@ -284,7 +379,10 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Ледяной дождь',snow:'Снег',heavySnow:'Сильный снег',snowGrains:'Снежная крупа',"
   "showers:'Ливень',heavyShowers:'Сильный ливень',snowShowers:'Снегопад',thunder:'Гроза',"
   "thunderHail:'Гроза с градом'}},"
-  "uk:{remoteControl:'Пульт',settings:'Налаштування',ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
+  "uk:{remoteControl:'Пульт',settings:'Налаштування',"
+  "artTheme:'Тема обкладинки:',artThemeCircle:'Коло (крутиться)',artThemeSquare:'Квадрат (статично)',"
+  "artThemeCube:'3D-куб',artThemePyramid:'3D-піраміда',"
+  "ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
   "powerOn:'Увімкнути',poweringOff:'Вимкнення',"
   "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
@@ -296,7 +394,10 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Крижаний дощ',snow:'Сніг',heavySnow:'Сильний сніг',snowGrains:'Снігова крупа',"
   "showers:'Злива',heavyShowers:'Сильна злива',snowShowers:'Снігопад',thunder:'Гроза',"
   "thunderHail:'Гроза з градом'}},"
-  "ro:{remoteControl:'Telecomandă',settings:'Setări',ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
+  "ro:{remoteControl:'Telecomandă',settings:'Setări',"
+  "artTheme:'Tema copertei:',artThemeCircle:'Cerc (se rotește)',artThemeSquare:'Pătrat (static)',"
+  "artThemeCube:'Cub 3D',artThemePyramid:'Piramidă 3D',"
+  "ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
   "powerOn:'Pornește',poweringOff:'Se oprește',"
   "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
@@ -308,7 +409,10 @@ static const char PAGE_HTML[] PROGMEM =
   "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
   "snowGrains:'Măzăriche de zăpadă',showers:'Averse',heavyShowers:'Averse puternice',"
   "snowShowers:'Ninsoare abundentă',thunder:'Furtună',thunderHail:'Furtună cu grindină'}},"
-  "en:{remoteControl:'Remote Control',settings:'Settings',ok:'OK',mute:'Mute',source:'Source',power:'Power',"
+  "en:{remoteControl:'Remote Control',settings:'Settings',"
+  "artTheme:'Cover theme:',artThemeCircle:'Circle (spinning)',artThemeSquare:'Square (static)',"
+  "artThemeCube:'3D cube',artThemePyramid:'3D pyramid',"
+  "ok:'OK',mute:'Mute',source:'Source',power:'Power',"
   "powerOn:'Power On',poweringOff:'Powering off',"
   "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
@@ -418,6 +522,53 @@ static const char PAGE_HTML[] PROGMEM =
   "let trackPos=0,trackLen=0,trackFetchTime=0,trackPlayingNow=false,trackSeekDragging=false;"
   // См. togglePlayPause() ниже за тем, зачем нужна эта пара (null — не ждём подтверждения)
   "let playPauseExpected=null,playPauseExpectedSince=0;"
+  // Тема обложки — per-viewer выбор, живёт в localStorage (тот же приём, что у lang выше),
+  // не на сервере: это чисто оформление этой конкретной вкладки, а не состояние Mega/Arylic.
+  // lastArt*/renderArt() ниже — чтобы применить новую тему СРАЗУ по выбору в дропдауне, не
+  // дожидаясь следующего /track-опроса (та же идея, что у togglePlayPause() выше)
+  "let artTheme='circle';"
+  "try{artTheme=localStorage.getItem('artTheme')||'circle'}catch(e){}"
+  "document.getElementById('artThemeSelect').value=artTheme;"
+  "let lastArtUrl='',lastArtSource='';"
+  "function applyArtTheme(t){"
+  "artTheme=t;"
+  "try{localStorage.setItem('artTheme',t)}catch(e){}"
+  "renderArt(lastArtUrl,lastArtSource)}"
+  // Четыре темы: круг/квадрат — просто переключают .themeCircle на #trackArt/#trackArtPlaceholder
+  // (см. <style> выше), куб/пирамида — отдельные элементы (#trackArtCube/#trackArtPyramid) с
+  // несколькими гранями, background-image которых выставляется тут же, общим querySelectorAll на
+  // весь набор граней сразу. Заглушка без обложки (нет источника с картинкой, см.
+  // #trackArtPlaceholder в <style>) для этих двух тем использует её же круглый вид — куб/пирамида
+  // из текста без изображения на гранях выглядели бы бессмысленно
+  "function renderArt(artUrl,source){"
+  "lastArtUrl=artUrl||'';lastArtSource=source||'';"
+  "let art=document.getElementById('trackArt');"
+  "let placeholder=document.getElementById('trackArtPlaceholder');"
+  "let cube=document.getElementById('trackArtCube');"
+  "let pyramid=document.getElementById('trackArtPyramid');"
+  "art.style.display='none';placeholder.style.display='none';"
+  "cube.style.display='none';pyramid.style.display='none';"
+  // Раньше тут стояло "artUrl&&(...)" — без реальной обложки (AirPlay, см. arylic_metadata.h)
+  // тема куб/пирамида полностью игнорировалась, откатываясь на круглую заглушку, будто выбор
+  // темы вообще ни на что не влиял. Теперь куб/пирамида показываются и без обложки — просто
+  // серыми гранями (background-color:#333 из <style>, явный сброс backgroundImage тут же не
+  // даёт остаться картинке от ПРЕДЫДУЩЕГО трека) — источник ("AirPlay" и т.п.) всё равно виден
+  // отдельной строкой ниже (#trackSource), текст на вращающихся гранях всё равно нечитаем
+  "if(source&&(artTheme==='cube'||artTheme==='pyramid')){"
+  "let el=artTheme==='cube'?cube:pyramid;"
+  "let faceSel=artTheme==='cube'?'#trackArtCubeInner .cubeFace':'#trackArtPyramidInner .pyramidFace';"
+  "el.style.display='block';"
+  "document.querySelectorAll(faceSel).forEach(f=>{f.style.backgroundImage=artUrl?\"url('\"+artUrl+\"')\":'none'})"
+  "}else if(artUrl){"
+  "if(art.src!==artUrl)art.src=artUrl;"
+  "art.classList.toggle('themeCircle',artTheme==='circle');"
+  "art.style.display='block'"
+  "}else if(source){"
+  "placeholder.classList.toggle('themeCircle',artTheme!=='square');"
+  "placeholder.style.display='flex';"
+  "document.getElementById('trackArtPlaceholderText').innerText=source"
+  "}"
+  "updatePlayVisuals(trackPlayingNow)}"
   "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
   "return m+':'+(s<10?'0':'')+s}"
   // Play (треугольник) — показывается, когда СЕЙЧАС не играет (нажатие возобновит); Pause (два
@@ -440,6 +591,8 @@ static const char PAGE_HTML[] PROGMEM =
   "let state=playing?'running':'paused';"
   "document.getElementById('trackArt').style.animationPlayState=state;"
   "document.getElementById('trackArtPlaceholder').style.animationPlayState=state;"
+  "document.getElementById('trackArtCubeInner').style.animationPlayState=state;"
+  "document.getElementById('trackArtPyramidInner').style.animationPlayState=state;"
   "document.getElementById('equalizer').classList.toggle('playing',playing)}"
   // playPauseExpected/-Since — pollTrack() ниже игнорирует любой ответ /track, не совпадающий
   // с этим ожиданием, пока оно не подтвердится (или не протухнет по таймауту). Раньше вместо
@@ -494,17 +647,8 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('trackProgress').style.display=(j.source==='AirPlay')?'none':'block';"
   // Обложка отдаётся ссылкой на CDN сервиса-источника, не байтами — сам img её и грузит.
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h) —
-  // тогда вместо неё #trackArtPlaceholder (см. <style> выше) с названием источника внутри,
-  // тот же кружок/анимация, что и у настоящей обложки, только один из двух виден одновременно
-  "let art=document.getElementById('trackArt');"
-  "let placeholder=document.getElementById('trackArtPlaceholder');"
-  "if(j.art){"
-  "if(art.src!==j.art)art.src=j.art;"
-  "art.style.display='block';placeholder.style.display='none'"
-  "}else if(j.source){"
-  "art.style.display='none';placeholder.style.display='flex';"
-  "document.getElementById('trackArtPlaceholderText').innerText=j.source"
-  "}else{art.style.display='none';placeholder.style.display='none'}"
+  // см. renderArt() за тем, что показывается вместо неё и как выбирается тема (круг/квадрат/куб)
+  "renderArt(j.art,j.source);"
   "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
   "function tickTrack(){"
   "document.getElementById('trackSeek').max=trackLen;"
