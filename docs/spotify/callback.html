@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход в Spotify…</title>
+</head>
+<body style="background:#000;color:#eee;font-family:sans-serif;text-align:center;padding-top:60px">
+<div id="msg">Завершаем вход…</div>
+<script>
+const CLIENT_ID = '1a0298a844e24d6d8ab31c9342760d42';
+const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/spotify/callback.html';
+
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const error = params.get('error');
+  const code = params.get('code');
+  const returnUrl = params.get('state'); // тот же ?return=..., что login.html положил в state
+  const msg = document.getElementById('msg');
+
+  if (!returnUrl) {
+    msg.textContent = 'Нет адреса возврата — откройте вход заново со страницы устройства, не эту ссылку напрямую';
+    return;
+  }
+  if (error) {
+    // Отказались войти на странице Spotify — просто возвращаемся на устройство без токена,
+    // без токена (страница ESP32 сама покажет кнопку "Войти" ещё раз)
+    location.href = returnUrl;
+    return;
+  }
+
+  const verifier = sessionStorage.getItem('sp_verifier');
+  if (!code || !verifier) {
+    msg.textContent = 'Нет кода или verifier из этой же сессии браузера — начните вход заново';
+    return;
+  }
+
+  try {
+    const body = new URLSearchParams({
+      client_id: CLIENT_ID,
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier,
+    });
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error_description || data.error || 'token exchange failed');
+
+    // Токен едет обратно во фрагменте (#), не в query: фрагмент браузер не отправляет на
+    // сервер и не хранит нигде, кроме адресной строки самого браузера — страница ESP32
+    // (обычный статический сервер) его вообще не увидит, прочитает только её собственный JS
+    const hash = new URLSearchParams({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_in: String(data.expires_in),
+    });
+    location.href = returnUrl + '#' + hash.toString();
+  } catch (e) {
+    msg.textContent = 'Не удалось войти: ' + e.message;
+  }
+})();
+</script>
+</body>
+</html>

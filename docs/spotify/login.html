@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Вход в Spotify…</title>
+</head>
+<body style="background:#000;color:#eee;font-family:sans-serif;text-align:center;padding-top:60px">
+<div id="msg">Переходим на страницу входа Spotify…</div>
+<script>
+// Публичный (не секретный) Client ID приложения из Spotify Developer Dashboard — при
+// Authorization Code + PKCE это не секрет (в отличие от Client Secret, который тут
+// нарочно не используется), нормально держать прямо в JS открытой страницы. Совпадает
+// со значением SP_CLIENT_ID в src/web_control.cpp этого же репозитория и с CLIENT_ID
+// в callback.html — все три места ссылаются на одно и то же зарегистрированное приложение.
+const CLIENT_ID = '1a0298a844e24d6d8ab31c9342760d42';
+const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/spotify/callback.html';
+
+function b64url(buf) {
+  let s = '';
+  new Uint8Array(buf).forEach((b) => { s += String.fromCharCode(b); });
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function randomString(len) {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return b64url(bytes.buffer).slice(0, len);
+}
+async function challengeFor(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return b64url(digest);
+}
+
+(async () => {
+  const returnUrl = new URLSearchParams(location.search).get('return');
+  if (!returnUrl) {
+    document.getElementById('msg').textContent = 'Не указан адрес возврата (?return=...) — эта страница не открывается напрямую';
+    return;
+  }
+
+  const verifier = randomString(64);
+  // sessionStorage ЭТОГО источника (github.io) — callback.html лежит на нём же и прочитает
+  // verifier напрямую отсюда, а не из URL. Если бы verifier передавался через query/state,
+  // он бы засветился в адресной строке рядом с кодом — и вся защита PKCE (что знание кода
+  // без verifier бесполезно) пропала бы даром.
+  sessionStorage.setItem('sp_verifier', verifier);
+  const challenge = await challengeFor(verifier);
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    scope: [
+      'user-read-playback-state',
+      'user-modify-playback-state',
+      'user-read-currently-playing',
+      'user-library-read',
+      'user-library-modify',
+    ].join(' '),
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+    // Возврат на страницу ESP32 передаём через state, а не через verifier — state не
+    // секретный, ему и положено путешествовать по URL туда-обратно
+    state: returnUrl,
+  });
+  location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
+})();
+</script>
+</body>
+</html>
