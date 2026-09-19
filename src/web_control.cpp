@@ -43,18 +43,50 @@ static const uint8_t WEB_ACTIONS_COUNT = sizeof(WEB_ACTIONS) / sizeof(WEB_ACTION
 static const char PAGE_HTML[] PROGMEM =
   "<!DOCTYPE html><html><head><meta charset=utf-8>"
   "<meta name=viewport content='width=device-width,initial-scale=1'>"
+  // Белые полосы сверху/снизу на iPhone (подтверждено на iPhone 13 Pro Max) — это не переливы
+  // фона страницы, а собственный хром Safari (статус-бар сверху, панель адреса снизу): с iOS 15
+  // Safari умеет красить их под цвет страницы через theme-color, без него — свой светлый цвет
+  // по умолчанию, независимо от фона body/html
+  "<meta name=theme-color content='#000000'>"
   "<title>Control</title><style>"
-  "body{font-family:sans-serif;text-align:center;background:#111;color:#eee}"
+  // html — отдельно от body: в Safari на iOS при "резиновом" оттягивании страницы вверх/вниз
+  // (rubber-band overscroll) видно фон именно html, а не body — без этого правила там был белый
+  // (фон html по умолчанию), пока фон body туда не дотягивался.
+  // background-attachment:fixed сюда специально НЕ добавляем (было и убрано) — ломало iOS Safari
+  // само по себе (резиновая прокрутка), см. историю ниже.
+  //
+  // background-color:#000 ОТДЕЛЬНО от background-image(градиент) — не просто на всякий случай:
+  // в iOS 26 Safari перестал читать theme-color вообще и вместо него красит статус-бар/панель
+  // адреса по СВОЙСТВУ background-color (не background-image!) у body/ближайших fixed-элементов.
+  // "background:linear-gradient(...)" — это чистый background-image, background-color при этом
+  // остаётся не задан (прозрачный) — Safari брал свой белый по умолчанию, отсюда и белые полосы
+  // сверху/снизу, не увиденные раньше на плоской заливке "background:#111" (та же short-hand
+  // форма ЗАДАЁТ background-color, градиент — нет). Задаём оба свойства явно
+  "html{background-color:#000;background-image:linear-gradient(135deg,#000,#3a3a3a)}"
+  "body{font-family:sans-serif;text-align:center;color:#eee;min-height:100vh;"
+  "background-color:#000;background-image:linear-gradient(135deg,#000,#3a3a3a)}"
   // touch-action:manipulation — убирает задержку/жест двойного тапа-зума на мобильных браузерах,
   // из-за которой быстрый второй тап по кнопке мог не долетать до click вообще (актуально для
   // playerCmd() — двойной клик на "назад" должен реально дойти как два отдельных клика).
   // -webkit-touch-callout/user-select:none — на iOS долгое удержание кнопки (см. startHold() у
   // Up/Down — именно она держится дольше обычного клика) без этого триггерит системное меню
   // выделения/копирования текста поверх кнопки, перехватывая жест вместо повторного вызова cmd()
-  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;background:#333;color:#eee;"
+  // background-color отдельно от background-image(градиент) — та же причина, что у html/body
+  // ниже (iOS 26 Safari красит хром по background-color, не background-image, см. комментарий
+  // там же за подробностями) — здесь скорее для единообразия, чем по необходимости (кнопки не
+  // у самого края экрана), но безопаснее задавать оба свойства везде, где раньше был просто цвет
+  "button{font-size:1.3em;margin:6px;padding:14px 22px;border-radius:8px;border:none;color:#eee;"
+  "background-color:#000;background-image:linear-gradient(135deg,#000,#3a3a3a);"
   "touch-action:manipulation;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}"
-  "button:active{background:#555}"
+  "button:active{background-image:linear-gradient(135deg,#222,#555)}"
   "button:disabled{opacity:.5}"
+  // Градиентный текст (вместо сплошного синего #8cf у погоды) — светлый серебристый градиент,
+  // не тон в тон с фоном (тот же чёрный-в-тёмно-серый на светлом тексте был бы попросту не
+  // виден), но в той же монохромной палитре, что и весь остальной градиентный фон/кнопки/грани.
+  // -webkit-background-clip нужен явно — background-clip:text до сих пор частично требует
+  // префикс в Safari
+  "#weatherText{background-image:linear-gradient(135deg,#fff,#999);"
+  "-webkit-background-clip:text;background-clip:text;color:transparent}"
   // Класс, не атрибут disabled — на реально disabled-кнопке браузер вообще не диспетчеризует
   // click, а второй клик двойного клика должен ДОЙТИ до JS и встать в playerCmdQueued (см.
   // playerCmd() ниже), просто визуально "притушенным" на время запроса
@@ -85,6 +117,7 @@ static const char PAGE_HTML[] PROGMEM =
   // гранях без картинки смысла не имеет) — вместо неё всегда эта же круглая/квадратная заглушка,
   // см. renderArt(): для темы "куб" используется её же круглый вариант
   "#trackArtPlaceholder{width:200px;height:200px;margin:0 auto 6px;"
+  "background:linear-gradient(135deg,#000,#3a3a3a);"
   "border:3px solid rgba(160,160,160,.4);display:none;align-items:center;justify-content:center}"
   "#trackArtPlaceholder.themeCircle{border-radius:50%;animation:spin 20s linear infinite;animation-play-state:paused}"
   "#trackArtPlaceholder span{color:rgba(160,160,160,.6);font-size:1.1em;text-align:center;padding:0 12px}"
@@ -115,8 +148,14 @@ static const char PAGE_HTML[] PROGMEM =
   "#trackArtCubeInner{width:144px;height:144px;position:absolute;left:50%;top:50%;"
   "margin-left:-72px;margin-top:-72px;transform-style:preserve-3d;"
   "animation:cubeSpin 12s linear infinite;animation-play-state:paused}"
+  // background-image задаётся из JS (renderArt()) — либо ссылка на обложку, либо градиент
+  // чёрный->тёмно-серый, когда обложки нет (см. там же); своего значения в CSS нет специально,
+  // инлайновый style всё равно бы его перебил
   "#trackArtCubeInner .cubeFace{position:absolute;top:0;left:0;width:144px;height:144px;"
-  "background-size:cover;background-position:center;background-color:#333;backface-visibility:hidden}"
+  "background-size:cover;background-position:center;backface-visibility:hidden;"
+  "display:flex;align-items:center;justify-content:center}"
+  "#trackArtCubeInner .cubeFace span,#trackArtPyramidInner .pyramidFace span{"
+  "color:rgba(210,210,210,.85);font-size:1em;text-align:center;padding:0 10px;pointer-events:none}"
   // f0-f3 — 4 боковые грани (перед/право/зад/лево), f4/f5 — верх/низ. Раньше вращение шло
   // только вокруг вертикали (rotateY), и верх/низ никогда не были видны, поэтому их не строили
   // вовсе — с вращением вокруг диагонали куба (см. @keyframes cubeSpin ниже) куб временами
@@ -151,8 +190,9 @@ static const char PAGE_HTML[] PROGMEM =
   "#trackArtPyramidInner{position:absolute;left:50%;top:35px;width:0;height:0;"
   "transform-style:preserve-3d;animation:pyramidSpin 12s linear infinite;animation-play-state:paused}"
   "#trackArtPyramidInner .pyramidFace{position:absolute;left:-70px;top:0;width:140px;height:166px;"
-  "background-size:cover;background-position:center;background-color:#333;backface-visibility:hidden;"
-  "transform-origin:50% 0%;clip-path:polygon(50% 0%,0% 100%,100% 100%)}"
+  "background-size:cover;background-position:center;backface-visibility:hidden;"
+  "transform-origin:50% 0%;clip-path:polygon(50% 0%,0% 100%,100% 100%);"
+  "display:flex;align-items:flex-end;justify-content:center;padding-bottom:20%;box-sizing:border-box}"
   "#trackArtPyramidInner .pyramidFace.p0{transform:rotateY(0) rotateX(25deg)}"
   "#trackArtPyramidInner .pyramidFace.p1{transform:rotateY(90deg) rotateX(25deg)}"
   "#trackArtPyramidInner .pyramidFace.p2{transform:rotateY(180deg) rotateX(25deg)}"
@@ -194,7 +234,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<span id=dtDate style='font-size:.85em;color:#aaa'></span>"
   "<div id=weatherInfo style='margin-top:4px'>"
   "<span id=weatherIcon style='font-size:1.8em;vertical-align:middle'></span> "
-  "<span id=weatherText style='font-size:1.15em;color:#8cf;vertical-align:middle'></span>"
+  "<span id=weatherText style='font-size:1.15em;vertical-align:middle'></span>"
   "</div></div></div>"
   // Всё "живое" содержимое страницы (тембр-блок, трек, плеер, ручной IP, смена Wi-Fi) — внутри
   // одного контейнера, чтобы одним переключением видимости (см. applyPowerState() ниже) убрать
@@ -226,13 +266,13 @@ static const char PAGE_HTML[] PROGMEM =
   "<img id=trackArt>"
   "<div id=trackArtPlaceholder><span id=trackArtPlaceholderText></span></div>"
   "<div id=trackArtCube><div id=trackArtCubeInner>"
-  "<div class='cubeFace f0'></div><div class='cubeFace f1'></div>"
-  "<div class='cubeFace f2'></div><div class='cubeFace f3'></div>"
-  "<div class='cubeFace f4'></div><div class='cubeFace f5'></div>"
+  "<div class='cubeFace f0'><span></span></div><div class='cubeFace f1'><span></span></div>"
+  "<div class='cubeFace f2'><span></span></div><div class='cubeFace f3'><span></span></div>"
+  "<div class='cubeFace f4'><span></span></div><div class='cubeFace f5'><span></span></div>"
   "</div></div>"
   "<div id=trackArtPyramid><div id=trackArtPyramidInner>"
-  "<div class='pyramidFace p0'></div><div class='pyramidFace p1'></div>"
-  "<div class='pyramidFace p2'></div><div class='pyramidFace p3'></div>"
+  "<div class='pyramidFace p0'><span></span></div><div class='pyramidFace p1'><span></span></div>"
+  "<div class='pyramidFace p2'><span></span></div><div class='pyramidFace p3'><span></span></div>"
   "</div></div>"
   "<div id=trackSource style='font-size:.8em;color:#8cf;display:none'></div>"
   "<div id=trackTitle style='font-size:2.1em;color:#ccc;margin-bottom:4px'></div>"
@@ -318,6 +358,175 @@ static const char PAGE_HTML[] PROGMEM =
   // Подпись — вне #mainContent/#powerOffScreen, видна всегда независимо от состояния питания
   "<div style='text-align:center;font-size:.7em;color:#666;margin:20px 0 8px'>"
   "Designed and Developed by Egor Avksentyev &amp; Sergey Ladnov</div>"
+  // Логотип Pathfinder — PNG с прозрачным фоном (чёрный фон исходника заменён на
+  // альфа-канал по яркости, обрезан по границам содержимого, ужат до 280px) вместо
+  // сплошного чёрного прямоугольника — вписывается в градиент страницы. Встроен как
+  // base64 прямо в PROGMEM
+  "<div style='text-align:center;margin:4px 0 16px'><img style='width:140px' src='data:image/png;base64,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"
+  "AAAASUVORK5CYII='></div>"
   "<script>"
   "function cmd(a){fetch('/cmd?action='+a)}"
   // Mega физически довозит Bass/High/Volume к нулю и держит 3с экран "POWER OFF" ПЕРЕД тем,
@@ -529,36 +738,57 @@ static const char PAGE_HTML[] PROGMEM =
   "let artTheme='circle';"
   "try{artTheme=localStorage.getItem('artTheme')||'circle'}catch(e){}"
   "document.getElementById('artThemeSelect').value=artTheme;"
-  "let lastArtUrl='',lastArtSource='';"
+  "let lastArtUrl='',lastArtSource='',artEverRendered=false;"
   "function applyArtTheme(t){"
   "artTheme=t;"
   "try{localStorage.setItem('artTheme',t)}catch(e){}"
   "renderArt(lastArtUrl,lastArtSource)}"
+  // Какой из четырёх элементов сейчас реально виден — ровно один, у остальных display:none
+  // (см. applyNow() ниже). Нужна для слайд-перехода: не важно, ЧТО именно показано (тема не
+  // меняется здесь), важно что именно эту DOM-ноду анимировать
+  "function currentArtEl(){"
+  "let ids=['trackArt','trackArtPlaceholder','trackArtCube','trackArtPyramid'];"
+  "for(let i=0;i<ids.length;i++){"
+  "let el=document.getElementById(ids[i]);"
+  "if(el.style.display!=='none')return el"
+  "}"
+  "return null"
+  "}"
   // Четыре темы: круг/квадрат — просто переключают .themeCircle на #trackArt/#trackArtPlaceholder
   // (см. <style> выше), куб/пирамида — отдельные элементы (#trackArtCube/#trackArtPyramid) с
   // несколькими гранями, background-image которых выставляется тут же, общим querySelectorAll на
   // весь набор граней сразу. Заглушка без обложки (нет источника с картинкой, см.
   // #trackArtPlaceholder в <style>) для этих двух тем использует её же круглый вид — куб/пирамида
-  // из текста без изображения на гранях выглядели бы бессмысленно
+  // из текста без изображения на гранях выглядели бы бессмысленно.
+  //
+  // changed — настоящая смена трека (не первый показ, не повторный вызов с тем же артом/
+  // источником при переключении темы через applyArtTheme()) — только тогда едет в сторону,
+  // как карусель: текущая фигура уезжает влево, затем на её месте (или на другом элементе,
+  // если заодно поменялась обложка<->заглушка) уже с новым содержимым въезжает справа
   "function renderArt(artUrl,source){"
-  "lastArtUrl=artUrl||'';lastArtSource=source||'';"
+  "let changed=artEverRendered&&((artUrl||'')!==lastArtUrl||(source||'')!==lastArtSource);"
+  "lastArtUrl=artUrl||'';lastArtSource=source||'';artEverRendered=true;"
+  "function applyNow(){"
   "let art=document.getElementById('trackArt');"
   "let placeholder=document.getElementById('trackArtPlaceholder');"
   "let cube=document.getElementById('trackArtCube');"
   "let pyramid=document.getElementById('trackArtPyramid');"
+  // Сброс transform/opacity у ВСЕХ четырёх при каждом обновлении — иначе элемент, который
+  // когда-то уехал влево слайдом, но сейчас скрыт (display:none), при следующем показе (без
+  // слайда, просто повторный applyNow()) вылез бы с этой же "залипшей" смещённой позиции
+  "art.style.transition=placeholder.style.transition=cube.style.transition=pyramid.style.transition='none';"
+  "art.style.transform=placeholder.style.transform=cube.style.transform=pyramid.style.transform='translateX(0)';"
+  "art.style.opacity=placeholder.style.opacity=cube.style.opacity=pyramid.style.opacity='1';"
   "art.style.display='none';placeholder.style.display='none';"
   "cube.style.display='none';pyramid.style.display='none';"
-  // Раньше тут стояло "artUrl&&(...)" — без реальной обложки (AirPlay, см. arylic_metadata.h)
-  // тема куб/пирамида полностью игнорировалась, откатываясь на круглую заглушку, будто выбор
-  // темы вообще ни на что не влиял. Теперь куб/пирамида показываются и без обложки — просто
-  // серыми гранями (background-color:#333 из <style>, явный сброс backgroundImage тут же не
-  // даёт остаться картинке от ПРЕДЫДУЩЕГО трека) — источник ("AirPlay" и т.п.) всё равно виден
-  // отдельной строкой ниже (#trackSource), текст на вращающихся гранях всё равно нечитаем
   "if(source&&(artTheme==='cube'||artTheme==='pyramid')){"
   "let el=artTheme==='cube'?cube:pyramid;"
   "let faceSel=artTheme==='cube'?'#trackArtCubeInner .cubeFace':'#trackArtPyramidInner .pyramidFace';"
   "el.style.display='block';"
-  "document.querySelectorAll(faceSel).forEach(f=>{f.style.backgroundImage=artUrl?\"url('\"+artUrl+\"')\":'none'})"
+  "document.querySelectorAll(faceSel).forEach(f=>{"
+  "f.style.backgroundImage=artUrl?\"url('\"+artUrl+\"')\":'linear-gradient(135deg,#000,#3a3a3a)';"
+  "f.querySelector('span').innerText=artUrl?'':source"
+  "})"
   "}else if(artUrl){"
   "if(art.src!==artUrl)art.src=artUrl;"
   "art.classList.toggle('themeCircle',artTheme==='circle');"
@@ -568,7 +798,32 @@ static const char PAGE_HTML[] PROGMEM =
   "placeholder.style.display='flex';"
   "document.getElementById('trackArtPlaceholderText').innerText=source"
   "}"
-  "updatePlayVisuals(trackPlayingNow)}"
+  "updatePlayVisuals(trackPlayingNow)"
+  "}"
+  "if(changed){"
+  "let outEl=currentArtEl();"
+  "if(outEl){"
+  "outEl.style.transition='transform .4s ease-in,opacity .4s ease-in';"
+  "outEl.style.transform='translateX(-60px)';"
+  "outEl.style.opacity='0'"
+  "}"
+  "setTimeout(()=>{"
+  "applyNow();"
+  "let inEl=currentArtEl();"
+  "if(inEl){"
+  "inEl.style.transition='none';"
+  "inEl.style.transform='translateX(60px)';"
+  "inEl.style.opacity='0';"
+  "inEl.offsetHeight;"
+  "inEl.style.transition='transform .4s ease-out,opacity .4s ease-out';"
+  "inEl.style.transform='translateX(0)';"
+  "inEl.style.opacity='1'"
+  "}"
+  "},380)"
+  "}else{"
+  "applyNow()"
+  "}"
+  "}"
   "function fmtTime(ms){let s=Math.max(0,Math.floor(ms/1000));let m=Math.floor(s/60);s=s%60;"
   "return m+':'+(s<10?'0':'')+s}"
   // Play (треугольник) — показывается, когда СЕЙЧАС не играет (нажатие возобновит); Pause (два
