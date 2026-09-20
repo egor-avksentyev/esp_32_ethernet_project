@@ -1189,7 +1189,8 @@ static const char PAGE_HTML[] PROGMEM =
   // сам HTTP-статус успешный (r.ok) — падаем только когда статус ошибочный
   "let data=null;"
   "if(text){try{data=JSON.parse(text)}catch(e){data=null}}"
-  "if(!r.ok)throw new Error((data&&data.error&&data.error.message)||('код '+r.status+(text?': '+text.slice(0,120):'')));"
+  "if(!r.ok){let err=new Error((data&&data.error&&data.error.message)||"
+  "('код '+r.status+(text?': '+text.slice(0,120):'')));err.status=r.status;throw err}"
   "return data}"
   "function spQS(parts){parts=parts.filter(Boolean);return parts.length?'?'+parts.join('&'):''}"
   "function spDevParam(){return spDeviceId?('device_id='+encodeURIComponent(spDeviceId)):''}"
@@ -1413,17 +1414,19 @@ static const char PAGE_HTML[] PROGMEM =
   // не в списке снесённого). У него ещё и поле трека внутри каждой записи переименовано —
   // .track стал .item (старое имя формально осталось как deprecated-алиас, но полагаться на
   // него не стоит). По документации Spotify этот эндпоинт отдаёт содержимое только для
-  // плейлистов, которыми владеет текущий пользователь, или в которых он соавтор — для чужих
-  // (найденных через поиск) список треков будет пустым, это ограничение самого Spotify
+  // плейлистов, которыми владеет текущий пользователь, или в которых он соавтор — для чужого
+  // плейлиста (найденного через поиск) он отвечает не пустым списком, а прямо 403 Forbidden
+  // (живой тест) — ловим это отдельно в catch, а не показываем голый "Ошибка: Forbidden"
   "let d=await spApi('/playlists/'+playlist.id+'/items');"
   "let tracks=(d.items||[]).map(it=>it.item||it.track).filter(Boolean);"
   "list.innerHTML='';"
-  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто (или это не ваш плейлист — Spotify"
-  " больше не отдаёт чужие треки сторонним приложениям)</div>';return}"
+  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто</div>';return}"
   // context_uri (сам плейлист), не uris — так Spotify ведёт очередь как "играю этот плейлист"
   // по-настоящему (в отличие от простого списка uris), офсет — с какого трека начать
   "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayContext(playlist.uri,{position:i}))));"
-  "}catch(e){list.innerHTML='<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
+  "}catch(e){list.innerHTML=e.status===403?"
+  "'<div class=spEmpty>Это не ваш плейлист — Spotify больше не отдаёт чужие треки сторонним"
+  " приложениям</div>':'<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
   "let spLibOffset=0,spLibUris=[];"
   "async function spLoadLibrary(reset){"
   "if(reset){spLibOffset=0;spLibUris=[];document.getElementById('spLibResults').innerHTML=''}"
