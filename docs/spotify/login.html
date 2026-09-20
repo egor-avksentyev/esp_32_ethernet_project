@@ -56,6 +56,10 @@ async function challengeFor(verifier) {
       'user-read-currently-playing',
       'user-library-read',
       'user-library-modify',
+      // country из /me — нужен как market для top-tracks артиста (market=from_token, который
+      // раньше это заменял, Spotify убрал; market теперь обязателен и должен быть настоящим
+      // ISO-кодом страны, не токеном)
+      'user-read-private',
     ].join(' '),
     code_challenge_method: 'S256',
     code_challenge: challenge,

@@ -96,13 +96,13 @@ static const char PAGE_HTML[] PROGMEM =
   // Тот же приём выезжания — теперь у двух независимых раскрывашек (Remote Control и
   // Settings, см. #settingsToggle/#settingsCollapse ниже) — общие правила через запятую,
   // а не два одинаковых набора под каждый ID
-  "#remoteToggle,#settingsToggle,#spotifyToggle{font-size:1em;padding:10px 18px}"
+  "#remoteToggle,#settingsToggle{font-size:1em;padding:10px 18px}"
   // Плавное сворачивание/разворачивание без JS-измерения высоты — CSS Grid с
   // grid-template-rows: 0fr -> 1fr, стандартный приём для анимации "auto height", которую
   // обычный max-height/transition сделать плавной не может без знания реальной высоты контента
-  "#remoteCollapse,#settingsCollapse,#spotifyCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
-  "#remoteCollapse.open,#settingsCollapse.open,#spotifyCollapse.open{grid-template-rows:1fr}"
-  "#remoteCollapse>div,#settingsCollapse>div,#spotifyCollapse>div{overflow:hidden}"
+  "#remoteCollapse,#settingsCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
+  "#remoteCollapse.open,#settingsCollapse.open{grid-template-rows:1fr}"
+  "#remoteCollapse>div,#settingsCollapse>div{overflow:hidden}"
   // Обложка — три темы на выбор (см. #artThemeSelect/applyArtTheme() ниже), выбор живёт в
   // localStorage (per-viewer, как язык). .themeCircle — модификатор "как пластинка": круглая,
   // крутится, пока играет (см. pollTrack()/updatePlayVisuals()). Без этого класса (тема
@@ -213,16 +213,16 @@ static const char PAGE_HTML[] PROGMEM =
   // Как и у трека выше — крутится/скачет, только пока реально играет
   "#equalizer.playing .eqBar{animation-play-state:running}"
   "@keyframes eqBounce{0%,100%{width:3px}50%{width:1cm}}"
-  // Вкладка Spotify — та же раскрывашка, что Remote Control/Settings (см. #spotifyToggle/
-  // #spotifyCollapse в правилах выше), но переключение вкладки происходит мгновенно, без
-  // перехода на другой сайт: логин — единственный момент, когда браузер ненадолго улетает на
+  // Экран Spotify (#spotifyScreen) — полноэкранный, подменяет собой #controlWrap целиком (см.
+  // showSpotifyScreen()/showControlScreen() в <script>), переключение мгновенное, без перехода
+  // на другой сайт: логин — единственный момент, когда браузер ненадолго улетает на
   // login.html/callback.html (GitHub Pages, нужен только из-за https-требования Spotify к
   // redirect_uri, см. CLAUDE.md/README) и тут же возвращается сюда же с токеном во фрагменте
-  // адреса (см. spCaptureCallback() в <script> ниже) — сама вкладка с этого момента работает
-  // целиком на этой странице, без повторных переходов
-  "#spotifyCollapse .spTabs{display:flex;gap:6px;align-items:center;margin-bottom:8px}"
-  "#spotifyCollapse .spTabs button{font-size:.9em;padding:6px 12px;border-radius:16px}"
-  "#spotifyCollapse .spTabs button.active{border-color:#8cf;color:#8cf}"
+  // адреса (см. spCaptureCallback() в <script> ниже) — сама страница с этого момента работает
+  // целиком тут же, без повторных переходов
+  "#spotifyScreen .spTabs{display:flex;gap:6px;align-items:center;margin-bottom:8px}"
+  "#spotifyScreen .spTabs button{font-size:.9em;padding:6px 12px;border-radius:16px}"
+  "#spotifyScreen .spTabs button.active{border-color:#8cf;color:#8cf}"
   ".spPrimaryBtn{border-color:#8cf;color:#8cf}"
   ".spSearchBox{display:flex;gap:6px;margin-bottom:8px}"
   ".spSearchBox input{flex:1;font-size:1em;padding:10px;border-radius:6px;border:none;background:#222;color:#eee}"
@@ -239,6 +239,8 @@ static const char PAGE_HTML[] PROGMEM =
   ".spHeart svg{fill:none;stroke:#999;stroke-width:2}"
   ".spHeart.saved svg{fill:#8cf;stroke:#8cf}"
   ".spEmpty{color:#888;text-align:center;padding:14px 0;font-size:.85em}"
+  ".spSectionTitle{font-size:1em;color:#ccc;margin:14px 0 6px}"
+  ".spThumb.spThumbRound{border-radius:50%}"
   ".spDeviceTag{margin-top:8px;font-size:.75em;color:#8cf;text-align:right}"
   // Мини-плеер — вне #mainContent (см. разметку ниже), поэтому виден независимо от состояния
   // питания Mega и от того, открыта ли вкладка Spotify — воспроизведение через Arylic как
@@ -257,6 +259,11 @@ static const char PAGE_HTML[] PROGMEM =
   "#spPlayerBar .spVolRow{display:flex;align-items:center;gap:8px;margin-top:2px}"
   "#spPlayerBar .spVolRow input[type=range]{width:90px}"
   "</style></head><body>"
+  // #controlWrap — все существующие экраны (эквалайзер, шапка, меню, экран Power Off) одним
+  // блоком, чтобы вкладка Spotify (см. #spotifyScreen ниже) могла спрятать их разом одним
+  // toggle, вместо того чтобы помнить, что именно из них сейчас показано (mainContent или
+  // powerOffScreen решает applyPowerState() — showControlScreen() просто зовёт её заново)
+  "<div id=controlWrap>"
   "<div id=equalizer></div>"
   // justify-content:space-between — слева выбор языка, справа дата/погода (было flex-end,
   // держало только правый блок). max-width на правом блоке — чтобы длинное название города
@@ -279,6 +286,13 @@ static const char PAGE_HTML[] PROGMEM =
   "<span id=weatherIcon style='font-size:1.8em;vertical-align:middle'></span> "
   "<span id=weatherText style='font-size:1.15em;vertical-align:middle'></span>"
   "</div></div></div>"
+  // Кнопка входа в Spotify — всегда на виду (не внутри #mainContent), сразу под шапкой, а не
+  // спрятана среди Remote Control/Settings: по вашей задумке это отдельный полноэкранный режим
+  // (см. #spotifyScreen/showSpotifyScreen() ниже), а не ещё одна раскрывашка внутри обычного
+  // экрана — переключение полностью на этой же странице, без перехода на другой сайт
+  "<div style='text-align:center;padding:6px 0 0'>"
+  "<button onclick=showSpotifyScreen() style='font-size:1em;padding:8px 20px'>"
+  "&#127925; Spotify</button></div>"
   // Всё "живое" содержимое страницы (тембр-блок, трек, плеер, ручной IP, смена Wi-Fi) — внутри
   // одного контейнера, чтобы одним переключением видимости (см. applyPowerState() ниже) убрать
   // его целиком при выключении питания, оставив только то, что явно должно остаться (язык/
@@ -389,14 +403,28 @@ static const char PAGE_HTML[] PROGMEM =
   "<div><button onclick=forgetWifi() style='background:#733' data-i18n=changeWifi>Сменить Wi-Fi</button></div>"
   "</div></div>"
   "</div>"
-  // Вкладка Spotify (поиск/библиотека/плеер) — сознательно ВНЕ #mainContent, в отличие от
-  // Remote Control/Settings: воспроизведение идёт через Arylic как Spotify Connect-цель
-  // напрямую из облака Spotify, не через Mega — значит должно оставаться доступным, даже
-  // когда Mega выключена (webPoweredOff), а не прятаться вместе с пультом/настройками
-  "<div id=spotifySection style='padding:0 10px'>"
-  "<button id=spotifyToggle onclick=toggleCollapse('spotifyCollapse')><span>&#127925; Spotify</span></button>"
-  "<div id=spotifyCollapse><div>"
-  "<div id=spLoginWrap style='display:none;text-align:center;padding:10px 0'>"
+  // Показывается вместо #mainContent, пока выключено (см. applyPowerState()) — большая круглая
+  // кнопка по центру экрана, только она и включает систему обратно. inset:0 — та же самая
+  // область на весь вьюпорт, что и у #equalizer, просто по центру и поверх (обычный порядок
+  // отрисовки — этот div идёт позже в разметке)
+  "<div id=powerOffScreen style='display:none;position:fixed;inset:0;align-items:center;justify-content:center'>"
+  "<button id=powerOnBtn onclick=cmd('power') "
+  "style='width:140px;height:140px;border-radius:50%;font-size:1.05em;line-height:1.3'>"
+  "<span id=powerOnLabel data-i18n=powerOn>Power On</span></button>"
+  "</div>"
+  "</div>"
+  // Экран Spotify (поиск/библиотека/плеер) — полноэкранный, ПОДМЕНЯЕТ собой #controlWrap
+  // целиком (см. showSpotifyScreen()/showControlScreen() в <script>), а не раскрывашка внутри
+  // обычного экрана: по задумке это отдельная "чистая" страница со своей кнопкой "Назад", а
+  // не ещё один пункт среди Remote Control/Settings. Вне #controlWrap — воспроизведение идёт
+  // через Arylic как Spotify Connect-цель напрямую из облака Spotify, не через Mega, поэтому
+  // доступно независимо от того, включена ли Mega (webPoweredOff)
+  "<div id=spotifyScreen style='display:none;position:fixed;inset:0;overflow-y:auto;"
+  "background-color:#000;background-image:linear-gradient(135deg,#000,#3a3a3a);z-index:7;padding:10px 14px 90px'>"
+  "<div style='display:flex;align-items:center;gap:10px;margin-bottom:12px'>"
+  "<button onclick=showControlScreen()>&larr; Назад</button>"
+  "<span style='font-size:1.15em;color:#8cf'>Spotify</span></div>"
+  "<div id=spLoginWrap style='display:none;text-align:center;padding:20px 0'>"
   "<button class=spPrimaryBtn onclick=spLogin()>Войти через Spotify</button></div>"
   "<div id=spAppWrap style='display:none'>"
   "<div class=spTabs>"
@@ -406,9 +434,9 @@ static const char PAGE_HTML[] PROGMEM =
   "</div>"
   "<div id=spSearchTab>"
   "<div class=spSearchBox>"
-  "<input id=spSearchInput type=text placeholder='Найти трек'>"
+  "<input id=spSearchInput type=text placeholder='Найти трек, исполнителя, плейлист'>"
   "<button onclick=spSearch()>Найти</button></div>"
-  "<div id=spSearchResults class=spRowList></div>"
+  "<div id=spSearchResults></div>"
   "</div>"
   "<div id=spLibTab style='display:none'>"
   "<div id=spLibResults class=spRowList></div>"
@@ -416,9 +444,19 @@ static const char PAGE_HTML[] PROGMEM =
   "</div>"
   "<div id=spDeviceTag class=spDeviceTag onclick=spEnsureDevice()>…</div>"
   "</div>"
-  "</div></div>"
+  // Экран артиста/плейлиста — подменяет #spAppWrap целиком (не раскрывашка поверх результатов
+  // поиска), т.к. попросили именно "результаты поиска скрываются, а контент показывается по
+  // центру", а не список поверх списка
+  "<div id=spDetailView style='display:none'>"
+  "<button onclick=closeDetailView()>&larr; Назад к поиску</button>"
+  "<div id=spDetailHeader style='text-align:center;margin:14px 0'></div>"
+  "<div id=spDetailList class=spRowList></div>"
   "</div>"
-  "<div id=spPlayerBar style='display:none'>"
+  // Мини-плеер — внутри #spotifyScreen (не общий с Control): раньше был снаружи и оставался
+  // виден поверх обычного экрана управления даже после "Назад" — по задумке весь плеер должен
+  // жить только на странице Spotify. position:fixed внутри — тот же самый низ вьюпорта, но
+  // теперь скрывается вместе со всем #spotifyScreen через его общий display:none
+  "<div id=spPlayerBar style='display:none;z-index:8'>"
   "<div class=spNpRow>"
   "<img id=spNpThumb class=spThumb>"
   "<div class=spNpMeta>"
@@ -447,14 +485,6 @@ static const char PAGE_HTML[] PROGMEM =
   "onpointerdown='spVolDragging=true' onchange=spVolChanged(this.value)>"
   "</div>"
   "</div>"
-  // Показывается вместо #mainContent, пока выключено (см. applyPowerState()) — большая круглая
-  // кнопка по центру экрана, только она и включает систему обратно. inset:0 — та же самая
-  // область на весь вьюпорт, что и у #equalizer, просто по центру и поверх (обычный порядок
-  // отрисовки — этот div идёт позже в разметке)
-  "<div id=powerOffScreen style='display:none;position:fixed;inset:0;align-items:center;justify-content:center'>"
-  "<button id=powerOnBtn onclick=cmd('power') "
-  "style='width:140px;height:140px;border-radius:50%;font-size:1.05em;line-height:1.3'>"
-  "<span id=powerOnLabel data-i18n=powerOn>Power On</span></button>"
   "</div>"
   // Подпись — вне #mainContent/#powerOffScreen, видна всегда независимо от состояния питания
   "<div style='text-align:center;font-size:.7em;color:#666;margin:20px 0 8px'>"
@@ -1133,7 +1163,19 @@ static const char PAGE_HTML[] PROGMEM =
   "let p=new URLSearchParams(location.hash.slice(1));"
   "spSaveTok({access:p.get('access_token'),refresh:p.get('refresh_token'),"
   "exp:Date.now()+Number(p.get('expires_in'))*1000});"
-  "history.replaceState(null,'',location.pathname+location.search)"
+  "history.replaceState(null,'',location.pathname+location.search);"
+  // renderSpotifyAuth() ДО showSpotifyScreen() — иначе видимость spLoginWrap/spAppWrap ещё не
+  // обновлена (renderSpotifyAuth обычно вызывается один раз в самом хвосте скрипта, до него
+  // сюда мы ещё не дошли), и showSpotifyScreen() открывает экран, внутри которого и логин, и
+  // поиск всё ещё display:none по умолчанию из разметки — снаружи это выглядит как "пустой"
+  // экран Spotify сразу после входа. Функции объявлены через function — их можно звать отсюда,
+  // хоть они и определены ниже по тексту (hoisting)
+  "renderSpotifyAuth();"
+  // Раз попали сюда — значит вход начался с #spotifyScreen (spLogin() — единственное место,
+  // откуда вообще уходят на login.html), возвращаем ровно туда же, а не оставляем на обычном
+  // экране управления, где придётся снова тыкать "Spotify" вручную. Скрипт — в конце <body>,
+  // DOM уже разобран к этому моменту, вызываем сразу, без ожидания DOMContentLoaded
+  "showSpotifyScreen()"
   "})();"
   "async function spRefresh(){"
   "let t=spTok();if(!t||!t.refresh)return null;"
@@ -1148,20 +1190,66 @@ static const char PAGE_HTML[] PROGMEM =
   "if(Date.now()<t.exp-30000)return t.access;"
   "return await spRefresh()}"
   "async function spApi(path,opts){"
+  "opts=opts||{};"
   "let tok=await spToken();if(!tok){spLogout();throw new Error('не выполнен вход')}"
-  "let r=await fetch('https://api.spotify.com/v1'+path,Object.assign({},opts,"
-  "{headers:Object.assign({Authorization:'Bearer '+tok,'Content-Type':'application/json'},(opts&&opts.headers)||{})}));"
+  // Content-Type:application/json ТОЛЬКО когда реально есть тело (play с uris/context) — на
+  // next/previous/pause/resume тело не шлём вообще, и этот заголовок без тела иногда заставляет
+  // сторону Spotify (или CDN перед ней) вернуть не-JSON страницу вместо обычного 204/JSON —
+  // именно так на практике проявлялась ошибка "JSON parse error" на кнопках play/pause/next/prev
+  "let headers=Object.assign({Authorization:'Bearer '+tok},opts.headers||{});"
+  "if(opts.body)headers['Content-Type']='application/json';"
+  "let r=await fetch('https://api.spotify.com/v1'+path,Object.assign({},opts,{headers}));"
   "if(r.status===204)return null;"
-  "let text=await r.text();let data=text?JSON.parse(text):null;"
-  "if(!r.ok)throw new Error((data&&data.error&&data.error.message)||r.statusText);"
+  "let text=await r.text();"
+  // Иногда Spotify (или CDN перед ней) на команды плеера отвечает 200 с телом, которое не
+  // разбирается как JSON (не документировано, но воспроизводится живьём на play/pause/next/
+  // prev) — при этом сама команда реально выполняется. Раз ни один из вызовов плеера не
+  // использует возвращаемые данные, не разобравшееся тело не должно считаться ошибкой, ЕСЛИ
+  // сам HTTP-статус успешный (r.ok) — падаем только когда статус ошибочный
+  "let data=null;"
+  "if(text){try{data=JSON.parse(text)}catch(e){data=null}}"
+  "if(!r.ok)throw new Error((data&&data.error&&data.error.message)||('код '+r.status+(text?': '+text.slice(0,120):'')));"
   "return data}"
   "function spQS(parts){parts=parts.filter(Boolean);return parts.length?'?'+parts.join('&'):''}"
   "function spDevParam(){return spDeviceId?('device_id='+encodeURIComponent(spDeviceId)):''}"
+  // market — теперь обязательный параметр top-tracks (Spotify убрал market=from_token, который
+  // раньше подставлял страну сам — без него top-tracks отвечал 403 Forbidden, см. живой тест).
+  // Берём реальную страну аккаунта через /me (нужен scope user-read-private) один раз и кэшируем
+  "let spMarketCache=null;"
+  "async function spMarket(){"
+  "if(spMarketCache)return spMarketCache;"
+  "try{let me=await spApi('/me');spMarketCache=me.country||'US'}catch(e){spMarketCache='US'}"
+  "return spMarketCache}"
+  // Только видимость логина/поиска — НЕ трогает опрос Spotify (см. showSpotifyScreen() ниже):
+  // раньше опрос /me/player запускался сразу при входе и работал в фоне постоянно, даже пока
+  // пользователь сидит на обычном экране управления — это, судя по всему, и мешало старому
+  // виджету Now Playing (управляет тем же Arylic напрямую через его локальный HTTP API,
+  // handlePlayback()/arylicSendPlayerCommand() в web_control.cpp) — "next" там начал приводить
+  // к паузе после того, как добавился параллельный опрос через облачный Spotify Web API
   "function renderSpotifyAuth(){"
   "let logged=!!spTok();"
   "document.getElementById('spLoginWrap').style.display=logged?'none':'block';"
-  "document.getElementById('spAppWrap').style.display=logged?'block':'none';"
-  "if(logged){spEnsureDevice();spStartPolling()}}"
+  "document.getElementById('spAppWrap').style.display=logged?'block':'none'}"
+  // Полноэкранное переключение между обычным управлением и Spotify — весь #controlWrap
+  // прячется целиком (эквалайзер/шапка/меню/экран Power Off, что бы из двух сейчас ни было
+  // показано — applyPowerState() сама разберётся при возврате), #spotifyScreen занимает его
+  // место. Кнопка входа — в шапке #controlWrap, кнопка "Назад" — в самом #spotifyScreen.
+  // Опрос Spotify (spStartPolling()) включается и выключается вместе с этим экраном — не
+  // должен работать в фоне, пока пользователь смотрит на обычное управление (см. комментарий
+  // у renderSpotifyAuth() выше)
+  "function showSpotifyScreen(){"
+  "document.getElementById('controlWrap').style.display='none';"
+  "document.getElementById('spotifyScreen').style.display='block';"
+  "if(spTok()){spEnsureDevice();spStartPolling()}}"
+  "function showControlScreen(){"
+  "document.getElementById('spotifyScreen').style.display='none';"
+  "document.getElementById('controlWrap').style.display='block';"
+  "if(spPollTimer){clearInterval(spPollTimer);spPollTimer=null}"
+  // Возврат в управление сбрасывает экран артиста/плейлиста, если он был открыт — следующий
+  // заход на Spotify начинается заново с поиска/библиотеки, а не оставляет вас внутри чужого
+  // артиста, про которого вы уже забыли
+  "closeDetailView();"
+  "lastPoweredOff=null;applyPowerState(lastStatus?lastStatus.poweredOff:false)}"
   "let spDeviceId=null;try{spDeviceId=localStorage.getItem('spDeviceId')||null}catch(e){}"
   "async function spEnsureDevice(){"
   "try{"
@@ -1175,8 +1263,20 @@ static const char PAGE_HTML[] PROGMEM =
   "}catch(e){}}"
   "function spSetDeviceLabel(name){"
   "document.getElementById('spDeviceTag').innerText=name?('\\u25b6 '+name):'Устройство не найдено — нажмите, чтобы обновить'}"
-  "async function spPlayUris(uris){"
-  "try{await spApi('/me/player/play'+spQS([spDevParam()]),{method:'PUT',body:JSON.stringify({uris})});"
+  // offset — с какой позиции в uris начать: без него Spotify не строит очередь вокруг
+  // выбранного трека (см. вызовы ниже) — раньше запускался только САМ этот трек без соседей,
+  // из-за чего "next" упирался в пустоту (нечего листать) вместо перехода к следующему в
+  // "Моих треках"/результатах поиска — именно так и проявлялся баг "играет одну песню и стоп"
+  "async function spPlayUris(uris,offset){"
+  "try{await spApi('/me/player/play'+spQS([spDevParam()]),{method:'PUT',"
+  "body:JSON.stringify(Object.assign({uris},offset?{offset}:{}))});"
+  "setTimeout(spPollPlayback,500)}catch(e){alert('Не удалось запустить: '+e.message)}}"
+  // context_uri (плейлист/альбом целиком), не голый список uris — для плейлиста это ближе к
+  // тому, что реально делает сам Spotify: очередь строится из настоящего плейлиста, а не из
+  // скопированного на момент клика списка id (тот не переживёт правки плейлиста кем-то другим)
+  "async function spPlayContext(contextUri,offset){"
+  "try{await spApi('/me/player/play'+spQS([spDevParam()]),{method:'PUT',"
+  "body:JSON.stringify(Object.assign({context_uri:contextUri},offset?{offset}:{}))});"
   "setTimeout(spPollPlayback,500)}catch(e){alert('Не удалось запустить: '+e.message)}}"
   "async function spResume(){try{await spApi('/me/player/play'+spQS([spDevParam()]),{method:'PUT'});"
   "setTimeout(spPollPlayback,400)}catch(e){alert('Ошибка плеера: '+e.message)}}"
@@ -1211,6 +1311,19 @@ static const char PAGE_HTML[] PROGMEM =
   "row.appendChild(heart);"
   "row.onclick=onPlay;"
   "return row}"
+  // Универсальная строка для артиста/плейлиста — без сердечка (сохранение артистов/плейлистов
+  // не входит в этот экран), img может быть пустой (без обложки/аватара — просто placeholder-фон)
+  "function spSimpleRow(name,sub,img,round,onClick){"
+  "let row=document.createElement('div');row.className='spRow';"
+  "let im=document.createElement('img');im.className='spThumb'+(round?' spThumbRound':'');im.src=img||'';"
+  "row.appendChild(im);"
+  "let meta=document.createElement('div');meta.className='spMeta';"
+  "let n=document.createElement('div');n.className='spName';n.innerText=name;"
+  "let s=document.createElement('div');s.className='spSub';s.innerText=sub||'';"
+  "meta.appendChild(n);meta.appendChild(s);row.appendChild(meta);"
+  "row.onclick=onClick;"
+  "return row}"
+  "function spSectionTitle(t){let d=document.createElement('div');d.className='spSectionTitle';d.innerText=t;return d}"
   "async function spMarkSaved(ids){"
   "if(!ids.length)return;"
   "try{let flags=await spApi('/me/tracks/contains?ids='+ids.join(','));"
@@ -1234,23 +1347,103 @@ static const char PAGE_HTML[] PROGMEM =
   "if(!q){box.innerHTML='';return}"
   "box.innerHTML='<div class=spEmpty>Ищем…</div>';"
   "try{"
-  "let d=await spApi('/search'+spQS(['q='+encodeURIComponent(q),'type=track','limit=15']));"
+  // URLSearchParams вместо ручной склейки строк — сама кодирует спецсимволы/кириллицу
+  // корректно. limit не задаём вовсе (Spotify берёт свой умолчательный, 20) — раньше
+  // явный limit=15 иногда возвращал "invalid limit" от Spotify без видимой причины.
+  // Три типа сразу одним запросом — Spotify поддерживает несколько type через запятую
+  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track,artist,playlist'}));"
   "let tracks=(d.tracks&&d.tracks.items)||[];"
+  "let artists=(d.artists&&d.artists.items)||[];"
+  // playlists.items может содержать null (удалённый/приватный плейлист в выдаче) — Spotify
+  // сам так отдаёт, не наш баг, просто отфильтровываем
+  "let playlists=(d.playlists&&d.playlists.items.filter(Boolean))||[];"
   "box.innerHTML='';"
-  "if(!tracks.length){box.innerHTML='<div class=spEmpty>Ничего не найдено</div>';return}"
-  "tracks.forEach(t=>box.appendChild(spTrackRow(t,()=>spPlayUris([t.uri]))));"
-  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))"
+  "if(!tracks.length&&!artists.length&&!playlists.length){"
+  "box.innerHTML='<div class=spEmpty>Ничего не найдено</div>';return}"
+  "if(tracks.length){"
+  "box.appendChild(spSectionTitle('Треки'));"
+  "let list=document.createElement('div');list.className='spRowList';"
+  "let uris=tracks.map(t=>t.uri);"
+  "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayUris(uris,{position:i}))));"
+  "box.appendChild(list);"
+  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))}"
+  "if(artists.length){"
+  "box.appendChild(spSectionTitle('Исполнители'));"
+  "let list=document.createElement('div');list.className='spRowList';"
+  "artists.forEach(a=>list.appendChild(spSimpleRow(a.name,'Исполнитель',spImg(a.images),true,()=>openArtistDetail(a))));"
+  "box.appendChild(list)}"
+  "if(playlists.length){"
+  "box.appendChild(spSectionTitle('Плейлисты'));"
+  "let list=document.createElement('div');list.className='spRowList';"
+  "playlists.forEach(p=>list.appendChild(spSimpleRow(p.name,"
+  "'Плейлист'+(p.owner&&p.owner.display_name?' · '+p.owner.display_name:''),"
+  "spImg(p.images),false,()=>openPlaylistDetail(p))));"
+  "box.appendChild(list)}"
   "}catch(e){box.innerHTML='<div class=spEmpty>Ошибка поиска: '+e.message+'</div>'}}"
-  "let spLibOffset=0;"
+  // Экран артиста/плейлиста — подменяет #spAppWrap целиком, результаты поиска/библиотека при
+  // этом скрываются (не остаются позади/под ним). closeDetailView() возвращает как было
+  "function showDetailView(){"
+  "document.getElementById('spAppWrap').style.display='none';"
+  "document.getElementById('spDetailView').style.display='block'}"
+  "function closeDetailView(){"
+  "document.getElementById('spDetailView').style.display='none';"
+  "document.getElementById('spAppWrap').style.display='block'}"
+  "async function openArtistDetail(artist){"
+  "showDetailView();"
+  "let header=document.getElementById('spDetailHeader');header.innerHTML='';"
+  "let img=spImg(artist.images);"
+  "if(img){let im=document.createElement('img');im.src=img;"
+  "im.style.cssText='width:120px;height:120px;border-radius:50%;object-fit:cover';header.appendChild(im)}"
+  "let name=document.createElement('div');name.style.cssText='font-size:1.2em;color:#fff;margin-top:8px';"
+  "name.innerText=artist.name;header.appendChild(name);"
+  "let list=document.getElementById('spDetailList');list.innerHTML='<div class=spEmpty>Загрузка…</div>';"
+  "try{"
+  // market=from_token раньше был нужен, но Spotify его убрал (был причиной "Ошибка: Forbidden"
+  // на живом тесте) — при авторизованном запросе рынок теперь и так определяется по токену
+  "let d=await spApi('/artists/'+artist.id+'/top-tracks?market='+await spMarket());"
+  "let tracks=d.tracks||[];"
+  "list.innerHTML='';"
+  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Нет данных</div>';return}"
+  "let uris=tracks.map(t=>t.uri);"
+  "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayUris(uris,{position:i}))));"
+  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))"
+  "}catch(e){list.innerHTML='<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
+  "async function openPlaylistDetail(playlist){"
+  "showDetailView();"
+  "let header=document.getElementById('spDetailHeader');header.innerHTML='';"
+  "let img=spImg(playlist.images);"
+  "if(img){let im=document.createElement('img');im.src=img;"
+  "im.style.cssText='width:120px;height:120px;border-radius:8px;object-fit:cover';header.appendChild(im)}"
+  "let name=document.createElement('div');name.style.cssText='font-size:1.2em;color:#fff;margin-top:8px';"
+  "name.innerText=playlist.name;header.appendChild(name);"
+  "let sub=document.createElement('div');sub.style.cssText='font-size:.8em;color:#999';"
+  "sub.innerText=(playlist.owner&&playlist.owner.display_name)||'';header.appendChild(sub);"
+  "let list=document.getElementById('spDetailList');list.innerHTML='<div class=spEmpty>Загрузка…</div>';"
+  "try{"
+  "let d=await spApi('/playlists/'+playlist.id+'/tracks?limit=100');"
+  "let tracks=d.items.map(it=>it.track).filter(Boolean);"
+  "list.innerHTML='';"
+  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто</div>';return}"
+  // context_uri (сам плейлист), не uris — так Spotify ведёт очередь как "играю этот плейлист"
+  // по-настоящему (в отличие от простого списка uris), офсет — с какого трека начать
+  "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayContext(playlist.uri,{position:i}))));"
+  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))"
+  "}catch(e){list.innerHTML='<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
+  "let spLibOffset=0,spLibUris=[];"
   "async function spLoadLibrary(reset){"
-  "if(reset){spLibOffset=0;document.getElementById('spLibResults').innerHTML=''}"
+  "if(reset){spLibOffset=0;spLibUris=[];document.getElementById('spLibResults').innerHTML=''}"
   "let box=document.getElementById('spLibResults');"
   "try{"
   "let d=await spApi('/me/tracks?limit=30&offset='+spLibOffset);"
   "let tracks=d.items.map(it=>it.track);"
   "if(!tracks.length&&spLibOffset===0){box.innerHTML='<div class=spEmpty>Нет сохранённых треков</div>';return}"
-  "tracks.forEach(t=>{"
-  "let row=spTrackRow(t,()=>spPlayUris([t.uri]));box.appendChild(row);"
+  // Копим URI всех уже подгруженных страниц в spLibUris — очередь строится по НЕМУ (позиция —
+  // сквозная по всему списку), не только по текущей странице, иначе "next" на последнем треке
+  // текущей порции просто упирался бы в конец, даже если дальше есть ещё подгруженные "Показать ещё"
+  "let startIndex=spLibUris.length;"
+  "spLibUris=spLibUris.concat(tracks.map(t=>t.uri));"
+  "tracks.forEach((t,i)=>{"
+  "let row=spTrackRow(t,()=>spPlayUris(spLibUris,{position:startIndex+i}));box.appendChild(row);"
   "let h=row.querySelector('.spHeart');if(h)h.classList.add('saved')"
   "});"
   "spLibOffset+=tracks.length;"
