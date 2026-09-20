@@ -1374,14 +1374,25 @@ static const char PAGE_HTML[] PROGMEM =
   // GET /artists/{id}/top-tracks полностью убран Spotify для Development Mode приложений
   // в феврале 2026 (вместе с popularity/followers у артиста и /browse/new-releases) — никакой
   // market/страна тут уже не спасают, эндпоинт отвечает 403 всем, у кого нет Extended Quota
-  // Mode (порог входа — 250K MAU, недостижим для домашнего проекта). Замена — обычный поиск
-  // треков по имени артиста: /search этим сносом не затронут, и Spotify внутри него сам
-  // сортирует по релевантности/популярности, что на практике и даёт список из топ-треков.
-  // limit не задаём — как и в spSearch() выше, явный limit на /search иногда ловит от Spotify
-  // "invalid limit" без видимой причины; без него Spotify берёт свой умолчательный (20)
-  "let q='artist:\"'+artist.name.replace(/\"/g,'')+'\"';"
-  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track'}));"
-  "let tracks=(d.tracks&&d.tracks.items)||[];"
+  // Mode (порог входа — 250K MAU, недостижим для домашнего проекта). Поиск /search?q=artist:"…"
+  // тоже не годится заменой — фразовый фильтр находит только то, что попало в топ релевантности
+  // текстового индекса, на практике иногда буквально 2-3 трека вместо всего каталога артиста.
+  // Настоящая замена — собственная дискография: /artists/{id}/albums жив (не в списке снесённых),
+  // затем ОДНИМ вызовом /albums?ids=… (Spotify отдаёт до 20 альбомов сразу, каждый уже со своими
+  // треками внутри — не нужен отдельный запрос на каждый альбом)
+  "let albList=await spApi('/artists/'+artist.id+'/albums?'+"
+  "new URLSearchParams({include_groups:'album,single',limit:'20'}));"
+  "let albIds=(albList.items||[]).map(a=>a.id);"
+  "let tracks=[];"
+  "if(albIds.length){"
+  "let full=await spApi('/albums?'+new URLSearchParams({ids:albIds.join(',')}));"
+  "(full.albums||[]).forEach(alb=>{if(!alb)return;"
+  "(alb.tracks&&alb.tracks.items||[]).forEach(t=>{t.album={images:alb.images};tracks.push(t)})})}"
+  // Один и тот же трек часто встречается и в альбоме, и синглом, и в переиздании — они получают
+  // разные id, поэтому дедуп по имени+исполнителям, не по id, оставляя первое вхождение
+  "let seen=new Set();tracks=tracks.filter(t=>{"
+  "let key=(t.name+'|'+(t.artists||[]).map(a=>a.id).join(',')).toLowerCase();"
+  "if(seen.has(key))return false;seen.add(key);return true});"
   "list.innerHTML='';"
   "if(!tracks.length){list.innerHTML='<div class=spEmpty>Нет данных</div>';return}"
   "let uris=tracks.map(t=>t.uri);"
