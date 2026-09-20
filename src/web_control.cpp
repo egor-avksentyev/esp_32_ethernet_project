@@ -1407,15 +1407,16 @@ static const char PAGE_HTML[] PROGMEM =
   "sub.innerText=(playlist.owner&&playlist.owner.display_name)||'';header.appendChild(sub);"
   "let list=document.getElementById('spDetailList');list.innerHTML='<div class=spEmpty>Загрузка…</div>';"
   "try{"
-  // GET /playlists/{id}/tracks (Get Playlist Items) снесён Spotify в февральском 2026 сносе
-  // для Development Mode вместе с top-tracks/batch-эндпоинтами (см. openArtistDetail() выше).
-  // Замена — обычный GET /playlists/{id}: он жив и отдаёт треки первой страницы вложенными
-  // в поле tracks.items, тем же способом, что /albums/{id} для альбома. НО: по документации
-  // Spotify это поле "доступно только для плейлистов, которыми владеет текущий пользователь,
-  // или в которых он соавтор" — для чужих (найденных через поиск) плейлистов список треков,
-  // скорее всего, будет пустым. Это ограничение самого Spotify, обхода нет
-  "let d=await spApi('/playlists/'+playlist.id);"
-  "let tracks=((d.tracks&&d.tracks.items)||[]).map(it=>it.track).filter(Boolean);"
+  // Старый GET /playlists/{id}/tracks снесён Spotify в февральском 2026 сносе для Development
+  // Mode вместе с top-tracks/batch-эндпоинтами (см. openArtistDetail() выше) — но взамен
+  // появился отдельный GET /playlists/{id}/items (не просто переименование: он и правда живой,
+  // не в списке снесённого). У него ещё и поле трека внутри каждой записи переименовано —
+  // .track стал .item (старое имя формально осталось как deprecated-алиас, но полагаться на
+  // него не стоит). По документации Spotify этот эндпоинт отдаёт содержимое только для
+  // плейлистов, которыми владеет текущий пользователь, или в которых он соавтор — для чужих
+  // (найденных через поиск) список треков будет пустым, это ограничение самого Spotify
+  "let d=await spApi('/playlists/'+playlist.id+'/items');"
+  "let tracks=(d.items||[]).map(it=>it.item||it.track).filter(Boolean);"
   "list.innerHTML='';"
   "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто (или это не ваш плейлист — Spotify"
   " больше не отдаёт чужие треки сторонним приложениям)</div>';return}"
