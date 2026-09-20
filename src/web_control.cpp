@@ -1379,10 +1379,12 @@ static const char PAGE_HTML[] PROGMEM =
   // текстового индекса, на практике иногда буквально 2-3 трека вместо всего каталога артиста.
   // Настоящая замена — собственная дискография: /artists/{id}/albums жив (не в списке снесённых),
   // затем ОДНИМ вызовом /albums?ids=… (Spotify отдаёт до 20 альбомов сразу, каждый уже со своими
-  // треками внутри — не нужен отдельный запрос на каждый альбом)
+  // треками внутри — не нужен отдельный запрос на каждый альбом). limit не задаём — как и в
+  // spSearch() выше, явный limit тут тоже ловит от Spotify "invalid limit" без видимой причины;
+  // без него Spotify берёт свой умолчательный (20 — как раз потолок одного запроса /albums?ids=)
   "let albList=await spApi('/artists/'+artist.id+'/albums?'+"
-  "new URLSearchParams({include_groups:'album,single',limit:'20'}));"
-  "let albIds=(albList.items||[]).map(a=>a.id);"
+  "new URLSearchParams({include_groups:'album,single'}));"
+  "let albIds=(albList.items||[]).map(a=>a.id).slice(0,20);"
   "let tracks=[];"
   "if(albIds.length){"
   "let full=await spApi('/albums?'+new URLSearchParams({ids:albIds.join(',')}));"
