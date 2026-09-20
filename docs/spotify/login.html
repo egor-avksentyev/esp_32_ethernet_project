@@ -61,11 +61,13 @@ async function challengeFor(verifier) {
       'user-read-playback-state',
       'user-modify-playback-state',
       'user-read-currently-playing',
-      // Только чтение — user-library-modify (сохранить/убрать трек) и user-read-private
-      // (страна аккаунта) убраны: обе фичи, которым они были нужны, снесены самим Spotify
-      // в феврале 2026 (см. комментарии у openArtistDetail()/spSectionTitle() в web_control.cpp)
+      // user-read-private убран — был нужен только spMarket() (страна для top-tracks), а тот
+      // эндпоинт сам Spotify снёс в феврале 2026 (см. openArtistDetail() в web_control.cpp)
       'user-library-read',
-      // Нужны, чтобы GET /playlists/{id} реально отдавал tracks.items для СВОИХ плейлистов —
+      // Сердечко (сохранить/убрать трек) — раньше был PUT/DELETE /me/tracks под тем же скоупом,
+      // Spotify заменил его на унифицированный /me/library, но сам scope не поменялся
+      'user-library-modify',
+      // Нужны, чтобы GET /playlists/{id}/items реально отдавал треки для СВОИХ плейлистов —
       // без playlist-read-private приватные свои же плейлисты выглядели бы как "не ваш плейлист"
       'playlist-read-private',
       'playlist-read-collaborative',
