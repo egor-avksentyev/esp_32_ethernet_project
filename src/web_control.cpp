@@ -260,6 +260,13 @@ static const char PAGE_HTML[] PROGMEM =
   // целиком тут же, без повторных переходов
   // flex-wrap — вкладок набралось много (поиск/треки/альбомы/плейлисты/недавнее/топ+Выйти),
   // без переноса они бы вылезали за край экрана на телефоне вместо аккуратного переноса строки
+  // Общий эффект нажатия для ВСЕХ кнопок на экране Spotify — сжатие transform'ом сработает
+  // даже для .spHeart/.spPillBtn/кнопок транспорта плеера, у которых background:none
+  // (background-based :active из общего "button:active" в начале файла их не задевает —
+  // более специфичный класс с background:none перебивает его вне зависимости от :active).
+  // Раньше нажатие было почти не видно — непонятно, сработал клик или нет
+  "#spotifyScreen button{transition:transform .08s}"
+  "#spotifyScreen button:active{transform:scale(.9)}"
   "#spotifyScreen .spTabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}"
   "#spotifyScreen .spTabs button{font-size:.9em;padding:6px 12px;border-radius:16px}"
   "#spotifyScreen .spTabs button.active{border-color:#8cf;color:#8cf}"
@@ -272,11 +279,14 @@ static const char PAGE_HTML[] PROGMEM =
   ".spSearchBox{display:flex;gap:6px;margin-bottom:8px}"
   ".spSearchBox input{flex:1;font-size:1em;padding:10px;border-radius:6px;border:none;background:#222;color:#eee}"
   ".spRowList{display:flex;flex-direction:column;gap:2px;max-height:340px;overflow-y:auto}"
-  ".spRow{display:flex;align-items:center;gap:10px;padding:6px 2px;border-radius:6px;text-align:left}"
-  ".spRow:active{background:rgba(255,255,255,.08)}"
-  ".spThumb{width:42px;height:42px;border-radius:4px;object-fit:cover;background:#222;flex-shrink:0}"
+  // :active — сильнее прежнего (.08 -> .18 альфа) + лёгкое сжатие transform'ом, раньше
+  // нажатие на строку было почти незаметно, особенно на телефоне
+  ".spRow{display:flex;align-items:center;gap:10px;padding:6px 2px;border-radius:6px;"
+  "text-align:left;transition:transform .08s}"
+  ".spRow:active{background:rgba(255,255,255,.18);transform:scale(.98)}"
+  ".spThumb{width:46px;height:46px;border-radius:4px;object-fit:cover;background:#222;flex-shrink:0}"
   ".spMeta{flex:1;min-width:0}"
-  ".spName{font-size:.92em;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+  ".spName{font-size:1.01em;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
   ".spSub{font-size:.78em;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
   // Сердечко — button.iconBtn общего вида нет в этом файле (кнопки тут все прямоугольные),
   // делаем компактную круглую без рамки прямо тут же, по образцу остальных инлайновых стилей
@@ -378,7 +388,7 @@ static const char PAGE_HTML[] PROGMEM =
   // mega_link.h), пробрасываются через уже существующий /status (renderStatus() ниже), а не
   // отдельным эндпоинтом — эта панель и так опрашивается каждые 1.5с. Пусто, пока Mega ни разу
   // не прислала своё состояние (megaKnown:false) — например сразу после включения ESP32
-  "<div id=megaSensors style='margin-top:8px;font-size:.78em;color:#999;text-align:center'></div>"
+  "<div id=megaSensors style='margin-top:8px;font-size:.94em;color:#999;text-align:center'></div>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt>"
@@ -499,7 +509,11 @@ static const char PAGE_HTML[] PROGMEM =
   "</div>"
   "<div id=spSearchTab>"
   "<div class=spSearchBox>"
-  "<input id=spSearchInput type=text placeholder='Найти трек, исполнителя, плейлист'>"
+  // oninput — раньше поле никак не следило за вводом (только клик по "Найти"), из-за чего
+  // старые результаты зависали на экране даже после того, как поле стёрли целиком; теперь
+  // пустое поле сразу чистит их (spClearSearchIfEmpty() ниже), не дожидаясь повторного клика
+  "<input id=spSearchInput type=text placeholder='Найти трек, исполнителя, плейлист' "
+  "oninput=spClearSearchIfEmpty()>"
   "<button data-i18n=spSearchBtn onclick=spSearch()>Найти</button></div>"
   "<div id=spSearchResults></div>"
   "</div>"
@@ -1644,6 +1658,13 @@ static const char PAGE_HTML[] PROGMEM =
   "if(tab==='playlists'&&!document.getElementById('spPlaylistsResults').childElementCount)spLoadPlaylists(true);"
   "if(tab==='recent'&&!document.getElementById('spRecentResults').childElementCount)spLoadRecent(true);"
   "if(tab==='top'&&!document.getElementById('spTopResults').childElementCount)spLoadTop()}"
+  // Только очистка — не живой поиск на каждую букву: сам spSearch() всё ещё дёргается
+  // только по кнопке "Найти", это лишь убирает зависшие с прошлого запроса результаты,
+  // когда поле опустело, чтобы на экране не оставалось несоответствия "поле пустое, а
+  // результаты от старого запроса всё ещё висят"
+  "function spClearSearchIfEmpty(){"
+  "if(!document.getElementById('spSearchInput').value.trim())"
+  "document.getElementById('spSearchResults').innerHTML=''}"
   "async function spSearch(){"
   "let q=document.getElementById('spSearchInput').value.trim();"
   "let box=document.getElementById('spSearchResults');"
