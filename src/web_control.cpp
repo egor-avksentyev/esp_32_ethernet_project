@@ -260,13 +260,15 @@ static const char PAGE_HTML[] PROGMEM =
   // целиком тут же, без повторных переходов
   // flex-wrap — вкладок набралось много (поиск/треки/альбомы/плейлисты/недавнее/топ+Выйти),
   // без переноса они бы вылезали за край экрана на телефоне вместо аккуратного переноса строки
-  // Общий эффект нажатия для ВСЕХ кнопок на экране Spotify — сжатие transform'ом сработает
-  // даже для .spHeart/.spPillBtn/кнопок транспорта плеера, у которых background:none
-  // (background-based :active из общего "button:active" в начале файла их не задевает —
-  // более специфичный класс с background:none перебивает его вне зависимости от :active).
-  // Раньше нажатие было почти не видно — непонятно, сработал клик или нет
+  // Общий эффект нажатия для ВСЕХ кнопок на экране Spotify. :active сам по себе оказался
+  // недостаточен — на телефонах (особенно iOS Safari) браузер по умолчанию вообще не
+  // применяет :active к элементам без своего touch-обработчика (известная особенность
+  // WebKit, экономия ресурсов) — эффект появлялся на десктопе с мышью, но не на реальном
+  // устройстве. .pressed — тот же эффект, но выставляется/снимается вручную через JS
+  // (setupSpTapFeedback() ниже, pointerdown/pointerup/pointercancel) — работает везде
+  // одинаково, не полагаясь на то, подхватит ли браузер :active сам
   "#spotifyScreen button{transition:transform .08s}"
-  "#spotifyScreen button:active{transform:scale(.9)}"
+  "#spotifyScreen button:active,#spotifyScreen button.pressed{transform:scale(.9)}"
   "#spotifyScreen .spTabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}"
   "#spotifyScreen .spTabs button{font-size:.9em;padding:6px 12px;border-radius:16px}"
   "#spotifyScreen .spTabs button.active{border-color:#8cf;color:#8cf}"
@@ -283,7 +285,7 @@ static const char PAGE_HTML[] PROGMEM =
   // нажатие на строку было почти незаметно, особенно на телефоне
   ".spRow{display:flex;align-items:center;gap:10px;padding:6px 2px;border-radius:6px;"
   "text-align:left;transition:transform .08s}"
-  ".spRow:active{background:rgba(255,255,255,.18);transform:scale(.98)}"
+  ".spRow:active,.spRow.pressed{background:rgba(255,255,255,.18);transform:scale(.98)}"
   ".spThumb{width:46px;height:46px;border-radius:4px;object-fit:cover;background:#222;flex-shrink:0}"
   ".spMeta{flex:1;min-width:0}"
   ".spName{font-size:1.01em;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
@@ -820,6 +822,24 @@ static const char PAGE_HTML[] PROGMEM =
   "bar.style.animationDuration=(.6+Math.random()*.8)+'s';"
   "bar.style.animationDelay=(Math.random()*.7)+'s';"
   "eq.appendChild(bar)}"
+  "})();"
+  // Единая точка нажатия для всего экрана Spotify — делегирование на #spotifyScreen, а не
+  // отдельный onpointerdown/onpointerup на каждой кнопке/строке (их уже под сотню с учётом
+  // динамически создаваемых строк списков). closest() находит ближайшего кандидата — кнопку,
+  // если тапнули по ней (в т.ч. по вложенному svg/span внутри), иначе .spRow, если тапнули по
+  // строке трека/артиста/плейлиста. pointerup/pointercancel — на document, не на самом
+  // элементе: палец может соскользнуть за пределы кнопки перед отпусканием, тогда обычный
+  // "pointerup на этом же элементе" не сработал бы, и подсветка осталась бы висеть навсегда
+  "(function setupSpTapFeedback(){"
+  "let pressedEl=null;"
+  "document.getElementById('spotifyScreen').addEventListener('pointerdown',function(e){"
+  "let el=e.target.closest('#spotifyScreen button,#spotifyScreen .spRow');"
+  "if(!el)return;"
+  "pressedEl=el;pressedEl.classList.add('pressed')"
+  "});"
+  "function release(){if(pressedEl){pressedEl.classList.remove('pressed');pressedEl=null}}"
+  "document.addEventListener('pointerup',release);"
+  "document.addEventListener('pointercancel',release)"
   "})();"
   // Все три языка целиком на клиенте — переключение мгновенное, без похода на сервер и без
   // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
