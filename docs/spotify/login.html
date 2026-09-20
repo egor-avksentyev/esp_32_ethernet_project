@@ -61,12 +61,14 @@ async function challengeFor(verifier) {
       'user-read-playback-state',
       'user-modify-playback-state',
       'user-read-currently-playing',
+      // Только чтение — user-library-modify (сохранить/убрать трек) и user-read-private
+      // (страна аккаунта) убраны: обе фичи, которым они были нужны, снесены самим Spotify
+      // в феврале 2026 (см. комментарии у openArtistDetail()/spSectionTitle() в web_control.cpp)
       'user-library-read',
-      'user-library-modify',
-      // country из /me — нужен как market для top-tracks артиста (market=from_token, который
-      // раньше это заменял, Spotify убрал; market теперь обязателен и должен быть настоящим
-      // ISO-кодом страны, не токеном)
-      'user-read-private',
+      // Нужны, чтобы GET /playlists/{id} реально отдавал tracks.items для СВОИХ плейлистов —
+      // без playlist-read-private приватные свои же плейлисты выглядели бы как "не ваш плейлист"
+      'playlist-read-private',
+      'playlist-read-collaborative',
     ].join(' '),
     code_challenge_method: 'S256',
     code_challenge: challenge,
