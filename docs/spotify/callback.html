@@ -32,11 +32,19 @@ const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/
   // localStorage, не sessionStorage — см. пояснение в login.html: iOS иногда возвращает сюда
   // в новой вкладке/контексте Safari, где старого sessionStorage уже нет
   const verifier = localStorage.getItem('sp_verifier');
-  localStorage.removeItem('sp_verifier');
   if (!code || !verifier) {
-    msg.textContent = 'Нет кода или verifier из этого же браузера — начните вход заново';
+    // Подробная диагностика вместо одной общей фразы — предыдущие догадки (сначала про
+    // sessionStorage) не подтвердились на живом тесте, нужно реально увидеть, чего именно
+    // не хватает, а не гадать дальше
+    msg.innerHTML = 'Не хватает данных для входа:<br><br>' +
+      'code: ' + (code ? 'есть (' + code.length + ' симв.)' : 'ОТСУТСТВУЕТ') + '<br>' +
+      'state (return): ' + (returnUrl || 'ОТСУТСТВУЕТ') + '<br>' +
+      'verifier из localStorage: ' + (verifier ? 'есть (' + verifier.length + ' симв.)' : 'ОТСУТСТВУЕТ') + '<br>' +
+      'localStorage вообще доступен: ' + (typeof localStorage !== 'undefined') + '<br>' +
+      'полный адрес: <br>' + location.href;
     return;
   }
+  localStorage.removeItem('sp_verifier');
 
   try {
     const body = new URLSearchParams({
