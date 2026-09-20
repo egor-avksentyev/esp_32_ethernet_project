@@ -39,16 +39,20 @@ async function challengeFor(verifier) {
   }
 
   const verifier = randomString(64);
-  // localStorage, не sessionStorage — на iOS переход на страницу подтверждения Spotify (или
-  // hand-off в само приложение Spotify, если оно установлено) иногда открывает возврат в НОВОЙ
-  // вкладке/контексте Safari, а sessionStorage привязан к конкретной вкладке и не переживает
-  // такое (было подтверждено живьём — вход "сбрасывало" именно на этом шаге). localStorage
-  // общий для всех вкладок одного источника (github.io), переживает эту ситуацию. Не query/
-  // state — verifier не должен светиться в адресной строке рядом с кодом, иначе вся защита
-  // PKCE (что знание кода без verifier бесполезно) пропала бы даром
-  localStorage.setItem('sp_verifier', verifier);
   const challenge = await challengeFor(verifier);
 
+  // ВАЖНО: verifier едет в state, не в localStorage/sessionStorage. Живой тест на iOS показал,
+  // что Safari (ITP, защита от "bounce tracking") стирает script-writable хранилище (даже
+  // localStorage) у доменов, через которые браузер быстро проходит транзитом в цепочке
+  // редиректов — а у нас именно так: ESP32 → github.io (эта страница) → accounts.spotify.com →
+  // github.io (callback.html) → снова ESP32. github.io в этой цепочке — ровно такой "транзитный"
+  // домен, поэтому verifier из localStorage долетал до callback.html пустым (подтверждено
+  // живьём, диагностика показала verifier:ОТСУТСТВУЕТ при этом localStorage вообще доступен:true).
+  // state как раз ничего не теряет по пути — он просто едет туда-обратно в самом URL, поэтому
+  // кладём verifier туда же, вместе с адресом возврата. Да, это чуть ослабляет защиту PKCE
+  // (verifier и code оказываются рядом в одном URL, а не только у того, кто их создал) — но раз
+  // единственный способ, который реально работает в Safari, это он, и весь путь идёт по https
+  // (кроме последнего шага на локальный IP ESP32, не покидающего домашнюю сеть)
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: 'code',
@@ -66,9 +70,7 @@ async function challengeFor(verifier) {
     ].join(' '),
     code_challenge_method: 'S256',
     code_challenge: challenge,
-    // Возврат на страницу ESP32 передаём через state, а не через verifier — state не
-    // секретный, ему и положено путешествовать по URL туда-обратно
-    state: returnUrl,
+    state: JSON.stringify({ r: returnUrl, v: verifier }),
   });
   location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
 })();

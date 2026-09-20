@@ -15,36 +15,37 @@ const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/
   const params = new URLSearchParams(location.search);
   const error = params.get('error');
   const code = params.get('code');
-  const returnUrl = params.get('state'); // тот же ?return=..., что login.html положил в state
+  const stateRaw = params.get('state');
   const msg = document.getElementById('msg');
+
+  // verifier и адрес возврата — оба из state, не из localStorage/sessionStorage. Живой тест на
+  // iOS показал, что Safari (ITP, защита от "bounce tracking") стирает script-writable
+  // хранилище github.io между login.html и этой страницей — он тут "транзитный" домен в
+  // цепочке редиректов ESP32→github.io→Spotify→github.io. state этой проблеме не подвержен —
+  // он просто едет туда-обратно в самом URL. См. подробности в login.html
+  let returnUrl = null, verifier = null;
+  try {
+    const state = JSON.parse(stateRaw || '');
+    returnUrl = state.r;
+    verifier = state.v;
+  } catch (e) { /* returnUrl/verifier остаются null — обработается ниже */ }
 
   if (!returnUrl) {
     msg.textContent = 'Нет адреса возврата — откройте вход заново со страницы устройства, не эту ссылку напрямую';
     return;
   }
   if (error) {
-    // Отказались войти на странице Spotify — просто возвращаемся на устройство без токена,
-    // без токена (страница ESP32 сама покажет кнопку "Войти" ещё раз)
+    // Отказались войти на странице Spotify — просто возвращаемся на устройство без токена
     location.href = returnUrl;
     return;
   }
-
-  // localStorage, не sessionStorage — см. пояснение в login.html: iOS иногда возвращает сюда
-  // в новой вкладке/контексте Safari, где старого sessionStorage уже нет
-  const verifier = localStorage.getItem('sp_verifier');
   if (!code || !verifier) {
-    // Подробная диагностика вместо одной общей фразы — предыдущие догадки (сначала про
-    // sessionStorage) не подтвердились на живом тесте, нужно реально увидеть, чего именно
-    // не хватает, а не гадать дальше
     msg.innerHTML = 'Не хватает данных для входа:<br><br>' +
       'code: ' + (code ? 'есть (' + code.length + ' симв.)' : 'ОТСУТСТВУЕТ') + '<br>' +
-      'state (return): ' + (returnUrl || 'ОТСУТСТВУЕТ') + '<br>' +
-      'verifier из localStorage: ' + (verifier ? 'есть (' + verifier.length + ' симв.)' : 'ОТСУТСТВУЕТ') + '<br>' +
-      'localStorage вообще доступен: ' + (typeof localStorage !== 'undefined') + '<br>' +
+      'verifier из state: ' + (verifier ? 'есть (' + verifier.length + ' симв.)' : 'ОТСУТСТВУЕТ') + '<br>' +
       'полный адрес: <br>' + location.href;
     return;
   }
-  localStorage.removeItem('sp_verifier');
 
   try {
     const body = new URLSearchParams({
