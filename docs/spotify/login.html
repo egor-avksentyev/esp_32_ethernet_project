@@ -72,7 +72,13 @@ async function challengeFor(verifier) {
     code_challenge: challenge,
     state: JSON.stringify({ r: returnUrl, v: verifier }),
   });
-  location.href = 'https://accounts.spotify.com/authorize?' + params.toString();
+  const authorizeUrl = 'https://accounts.spotify.com/authorize?' + params.toString();
+  // "Выйти" на странице устройства (spLogout()) стирает только локальный токен — саму сессию
+  // на accounts.spotify.com это не трогает. Без этого шага /authorize видел бы, что браузер
+  // (или, на телефоне, приложение Spotify) уже залогинен, и молча переавторизовывал бы ТОТ ЖЕ
+  // аккаунт без формы ввода — пользователь не мог выбрать другой. Проверено живьём: /logout
+  // принимает continue= на другой адрес accounts.spotify.com и после выхода едет по нему дальше
+  location.href = 'https://accounts.spotify.com/logout?continue=' + encodeURIComponent(authorizeUrl);
 })();
 </script>
 </body>
