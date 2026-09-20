@@ -510,12 +510,12 @@ static const char PAGE_HTML[] PROGMEM =
   "<div id=spSearchTab>"
   "<div class=spSearchBox>"
   // oninput — раньше поле никак не следило за вводом (только клик по "Найти"), результаты
-  // от старого запроса зависали на экране, даже когда поле стёрли целиком. Теперь живой
-  // поиск по мере набора/стирания (spOnSearchInput() ниже) — с debounce, не на каждую букву
+  // от старого запроса зависали на экране, даже когда поле стёрли целиком. Живой поиск по
+  // мере набора текста пробовали (debounce) — не понравилось, вернули обратно на явный клик
+  // по "Найти"; oninput остался только для очистки при стирании поля (spClearSearchIfEmpty())
   "<input id=spSearchInput type=text placeholder='Найти трек, исполнителя, плейлист' "
-  "oninput=spOnSearchInput()>"
-  "<button data-i18n=spSearchBtn onclick=\"if(spSearchDebounce)clearTimeout(spSearchDebounce);spSearch()\">"
-  "Найти</button></div>"
+  "oninput=spClearSearchIfEmpty()>"
+  "<button data-i18n=spSearchBtn onclick=spSearch()>Найти</button></div>"
   "<div id=spSearchResults></div>"
   "</div>"
   "<div id=spLibTab style='display:none'>"
@@ -1659,16 +1659,12 @@ static const char PAGE_HTML[] PROGMEM =
   "if(tab==='playlists'&&!document.getElementById('spPlaylistsResults').childElementCount)spLoadPlaylists(true);"
   "if(tab==='recent'&&!document.getElementById('spRecentResults').childElementCount)spLoadRecent(true);"
   "if(tab==='top'&&!document.getElementById('spTopResults').childElementCount)spLoadTop()}"
-  // Живой поиск — debounce 400мс, не запрос на каждую букву: Spotify Development Mode
-  // считает квоту жёстко (см. docs/spotify/API_STATUS.md, QUOTA_EXCEEDED), а без задержки
-  // короткое слово из 5 букв — это 5 запросов почти одновременно. Пустое поле чистит
-  // результаты сразу же, без задержки — тут ждать нечего, запрос всё равно не пойдёт
-  "let spSearchDebounce=null;"
-  "function spOnSearchInput(){"
-  "if(spSearchDebounce)clearTimeout(spSearchDebounce);"
-  "if(!document.getElementById('spSearchInput').value.trim()){"
-  "document.getElementById('spSearchResults').innerHTML='';return}"
-  "spSearchDebounce=setTimeout(spSearch,400)}"
+  // Только очистка — не живой поиск: пробовали debounce на каждый ввод, не понравилось.
+  // Сам поиск всё ещё только по кнопке "Найти", это лишь убирает зависшие с прошлого
+  // запроса результаты, когда поле опустело
+  "function spClearSearchIfEmpty(){"
+  "if(!document.getElementById('spSearchInput').value.trim())"
+  "document.getElementById('spSearchResults').innerHTML=''}"
   "async function spSearch(){"
   "let q=document.getElementById('spSearchInput').value.trim();"
   "let box=document.getElementById('spSearchResults');"
