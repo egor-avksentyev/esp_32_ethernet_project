@@ -233,11 +233,6 @@ static const char PAGE_HTML[] PROGMEM =
   ".spMeta{flex:1;min-width:0}"
   ".spName{font-size:.92em;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
   ".spSub{font-size:.78em;color:#999;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
-  // Сердечко — button.iconBtn общего вида нет в этом файле (кнопки тут все прямоугольные),
-  // делаем компактную круглую без рамки прямо тут же, по образцу остальных инлайновых стилей
-  ".spHeart{border:none;background:none;padding:4px;border-radius:50%;flex-shrink:0}"
-  ".spHeart svg{fill:none;stroke:#999;stroke-width:2}"
-  ".spHeart.saved svg{fill:#8cf;stroke:#8cf}"
   ".spEmpty{color:#888;text-align:center;padding:14px 0;font-size:.85em}"
   ".spSectionTitle{font-size:1em;color:#ccc;margin:14px 0 6px}"
   ".spThumb.spThumbRound{border-radius:50%}"
@@ -1266,8 +1261,6 @@ static const char PAGE_HTML[] PROGMEM =
   "{method:'PUT'}).catch(e=>alert('Не удалось перемотать: '+e.message))}}"
   "function spVolChanged(val){spVolDragging=false;"
   "spApi('/me/player/volume'+spQS(['volume_percent='+Math.round(val),spDevParam()]),{method:'PUT'}).catch(()=>{})}"
-  "const SP_HEART='<svg viewBox=\"0 0 24 24\" width=18 height=18><path d=\"M12 21s-7.5-4.6-10-9.1C0.3 8.6 1.8 5"
-  " 5.3 5c2 0 3.4 1 4.7 2.6C11.3 6 12.7 5 14.7 5c3.5 0 5 3.6 3.3 6.9C19.5 16.4 12 21 12 21z\"></path></svg>';"
   "function spImg(images){return images&&images.length?images[images.length-1].url:''}"
   "function spTrackRow(track,onPlay){"
   "let row=document.createElement('div');row.className='spRow';"
@@ -1278,10 +1271,6 @@ static const char PAGE_HTML[] PROGMEM =
   "let sub=document.createElement('div');sub.className='spSub';"
   "sub.innerText=(track.artists||[]).map(a=>a.name).join(', ');"
   "meta.appendChild(name);meta.appendChild(sub);row.appendChild(meta);"
-  "let heart=document.createElement('button');heart.className='spHeart';heart.innerHTML=SP_HEART;"
-  "heart.dataset.id=track.id;"
-  "heart.onclick=function(e){e.stopPropagation();spToggleSaved(track.id,heart)};"
-  "row.appendChild(heart);"
   "row.onclick=onPlay;"
   "return row}"
   // Универсальная строка для артиста/плейлиста — без сердечка (сохранение артистов/плейлистов
@@ -1297,17 +1286,11 @@ static const char PAGE_HTML[] PROGMEM =
   "row.onclick=onClick;"
   "return row}"
   "function spSectionTitle(t){let d=document.createElement('div');d.className='spSectionTitle';d.innerText=t;return d}"
-  "async function spMarkSaved(ids){"
-  "if(!ids.length)return;"
-  "try{let flags=await spApi('/me/tracks/contains?ids='+ids.join(','));"
-  "ids.forEach((id,i)=>{if(!flags[i])return;"
-  "let h=document.querySelector('.spHeart[data-id=\"'+id+'\"]');if(h)h.classList.add('saved')})"
-  "}catch(e){}}"
-  "async function spToggleSaved(id,btn){"
-  "try{"
-  "if(btn.classList.contains('saved')){await spApi('/me/tracks?ids='+id,{method:'DELETE'});btn.classList.remove('saved')}"
-  "else{await spApi('/me/tracks?ids='+id,{method:'PUT'});btn.classList.add('saved')}"
-  "}catch(e){alert('Не получилось: '+e.message)}}"
+  // Раньше тут были spMarkSaved()/spToggleSaved() — сердечко сохранить/убрать трек из библиотеки.
+  // Spotify в февральском 2026 сносе для Development Mode убрал PUT/DELETE/GET .../me/tracks
+  // (save/remove/contains) целиком, без замены — это запись в библиотеку, а не чтение, тут нет
+  // обходного эндпоинта вроде /albums/{id} для top-tracks выше. Кнопку убрали совсем, а не
+  // оставили дергать 403 на каждый клик
   "function spSwitchTab(tab){"
   "document.getElementById('spSearchTab').style.display=tab==='search'?'block':'none';"
   "document.getElementById('spLibTab').style.display=tab==='lib'?'block':'none';"
@@ -1340,8 +1323,7 @@ static const char PAGE_HTML[] PROGMEM =
   "let list=document.createElement('div');list.className='spRowList';"
   "let uris=tracks.map(t=>t.uri);"
   "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayUris(uris,{position:i}))));"
-  "box.appendChild(list);"
-  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))}"
+  "box.appendChild(list)}"
   "if(artists.length){"
   "box.appendChild(spSectionTitle('Исполнители'));"
   "let list=document.createElement('div');list.className='spRowList';"
@@ -1404,7 +1386,6 @@ static const char PAGE_HTML[] PROGMEM =
   "if(!tracks.length){list.innerHTML='<div class=spEmpty>Нет данных</div>';return}"
   "let uris=tracks.map(t=>t.uri);"
   "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayUris(uris,{position:i}))));"
-  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))"
   "}catch(e){list.innerHTML='<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
   "async function openPlaylistDetail(playlist){"
   "showDetailView();"
@@ -1418,14 +1399,21 @@ static const char PAGE_HTML[] PROGMEM =
   "sub.innerText=(playlist.owner&&playlist.owner.display_name)||'';header.appendChild(sub);"
   "let list=document.getElementById('spDetailList');list.innerHTML='<div class=spEmpty>Загрузка…</div>';"
   "try{"
-  "let d=await spApi('/playlists/'+playlist.id+'/tracks?limit=100');"
-  "let tracks=d.items.map(it=>it.track).filter(Boolean);"
+  // GET /playlists/{id}/tracks (Get Playlist Items) снесён Spotify в февральском 2026 сносе
+  // для Development Mode вместе с top-tracks/batch-эндпоинтами (см. openArtistDetail() выше).
+  // Замена — обычный GET /playlists/{id}: он жив и отдаёт треки первой страницы вложенными
+  // в поле tracks.items, тем же способом, что /albums/{id} для альбома. НО: по документации
+  // Spotify это поле "доступно только для плейлистов, которыми владеет текущий пользователь,
+  // или в которых он соавтор" — для чужих (найденных через поиск) плейлистов список треков,
+  // скорее всего, будет пустым. Это ограничение самого Spotify, обхода нет
+  "let d=await spApi('/playlists/'+playlist.id);"
+  "let tracks=((d.tracks&&d.tracks.items)||[]).map(it=>it.track).filter(Boolean);"
   "list.innerHTML='';"
-  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто</div>';return}"
+  "if(!tracks.length){list.innerHTML='<div class=spEmpty>Пусто (или это не ваш плейлист — Spotify"
+  " больше не отдаёт чужие треки сторонним приложениям)</div>';return}"
   // context_uri (сам плейлист), не uris — так Spotify ведёт очередь как "играю этот плейлист"
   // по-настоящему (в отличие от простого списка uris), офсет — с какого трека начать
   "tracks.forEach((t,i)=>list.appendChild(spTrackRow(t,()=>spPlayContext(playlist.uri,{position:i}))));"
-  "spMarkSaved(tracks.map(t=>t.id).filter(Boolean))"
   "}catch(e){list.innerHTML='<div class=spEmpty>Ошибка: '+e.message+'</div>'}}"
   "let spLibOffset=0,spLibUris=[];"
   "async function spLoadLibrary(reset){"
@@ -1441,8 +1429,7 @@ static const char PAGE_HTML[] PROGMEM =
   "let startIndex=spLibUris.length;"
   "spLibUris=spLibUris.concat(tracks.map(t=>t.uri));"
   "tracks.forEach((t,i)=>{"
-  "let row=spTrackRow(t,()=>spPlayUris(spLibUris,{position:startIndex+i}));box.appendChild(row);"
-  "let h=row.querySelector('.spHeart');if(h)h.classList.add('saved')"
+  "box.appendChild(spTrackRow(t,()=>spPlayUris(spLibUris,{position:startIndex+i})))"
   "});"
   "spLibOffset+=tracks.length;"
   "document.getElementById('spLibMoreBtn').style.display=d.next?'block':'none'"
