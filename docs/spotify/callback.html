@@ -35,8 +35,13 @@ const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/
     return;
   }
   if (error) {
-    // Отказались войти на странице Spotify — просто возвращаемся на устройство без токена
-    location.href = returnUrl;
+    // Раньше тут был мгновенный редирект обратно без токена — что бы Spotify ни вернул в
+    // error, экран пролетал незаметно. Показываем явно вместо того, чтобы гадать дальше
+    const errorDescription = params.get('error_description');
+    msg.innerHTML = 'Spotify вернул ошибку:<br><br>' +
+      'error: ' + error + '<br>' +
+      (errorDescription ? 'описание: ' + errorDescription + '<br>' : '') +
+      '<br><a href="' + returnUrl + '" style="color:#8cf">Вернуться на устройство</a>';
     return;
   }
   if (!code || !verifier) {
