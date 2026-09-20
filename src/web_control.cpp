@@ -1212,14 +1212,6 @@ static const char PAGE_HTML[] PROGMEM =
   "return data}"
   "function spQS(parts){parts=parts.filter(Boolean);return parts.length?'?'+parts.join('&'):''}"
   "function spDevParam(){return spDeviceId?('device_id='+encodeURIComponent(spDeviceId)):''}"
-  // market — теперь обязательный параметр top-tracks (Spotify убрал market=from_token, который
-  // раньше подставлял страну сам — без него top-tracks отвечал 403 Forbidden, см. живой тест).
-  // Берём реальную страну аккаунта через /me (нужен scope user-read-private) один раз и кэшируем
-  "let spMarketCache=null;"
-  "async function spMarket(){"
-  "if(spMarketCache)return spMarketCache;"
-  "try{let me=await spApi('/me');spMarketCache=me.country||'US'}catch(e){spMarketCache='US'}"
-  "return spMarketCache}"
   // Только видимость логина/поиска — НЕ трогает опрос Spotify (см. showSpotifyScreen() ниже):
   // раньше опрос /me/player запускался сразу при входе и работал в фоне постоянно, даже пока
   // пользователь сидит на обычном экране управления — это, судя по всему, и мешало старому
@@ -1398,10 +1390,15 @@ static const char PAGE_HTML[] PROGMEM =
   "name.innerText=artist.name;header.appendChild(name);"
   "let list=document.getElementById('spDetailList');list.innerHTML='<div class=spEmpty>Загрузка…</div>';"
   "try{"
-  // market=from_token раньше был нужен, но Spotify его убрал (был причиной "Ошибка: Forbidden"
-  // на живом тесте) — при авторизованном запросе рынок теперь и так определяется по токену
-  "let d=await spApi('/artists/'+artist.id+'/top-tracks?market='+await spMarket());"
-  "let tracks=d.tracks||[];"
+  // GET /artists/{id}/top-tracks полностью убран Spotify для Development Mode приложений
+  // в феврале 2026 (вместе с popularity/followers у артиста и /browse/new-releases) — никакой
+  // market/страна тут уже не спасают, эндпоинт отвечает 403 всем, у кого нет Extended Quota
+  // Mode (порог входа — 250K MAU, недостижим для домашнего проекта). Замена — обычный поиск
+  // треков по имени артиста: /search этим сносом не затронут, и Spotify внутри него сам
+  // сортирует по релевантности/популярности, что на практике и даёт список из топ-треков
+  "let q='artist:\"'+artist.name.replace(/\"/g,'')+'\"';"
+  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track',limit:'20'}));"
+  "let tracks=(d.tracks&&d.tracks.items)||[];"
   "list.innerHTML='';"
   "if(!tracks.length){list.innerHTML='<div class=spEmpty>Нет данных</div>';return}"
   "let uris=tracks.map(t=>t.uri);"
