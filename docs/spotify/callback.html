@@ -29,9 +29,12 @@ const REDIRECT_URI = 'https://egor-avksentyev.github.io/esp_32_ethernet_project/
     return;
   }
 
-  const verifier = sessionStorage.getItem('sp_verifier');
+  // localStorage, не sessionStorage — см. пояснение в login.html: iOS иногда возвращает сюда
+  // в новой вкладке/контексте Safari, где старого sessionStorage уже нет
+  const verifier = localStorage.getItem('sp_verifier');
+  localStorage.removeItem('sp_verifier');
   if (!code || !verifier) {
-    msg.textContent = 'Нет кода или verifier из этой же сессии браузера — начните вход заново';
+    msg.textContent = 'Нет кода или verifier из этого же браузера — начните вход заново';
     return;
   }
 

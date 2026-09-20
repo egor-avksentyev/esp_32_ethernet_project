@@ -39,11 +39,14 @@ async function challengeFor(verifier) {
   }
 
   const verifier = randomString(64);
-  // sessionStorage ЭТОГО источника (github.io) — callback.html лежит на нём же и прочитает
-  // verifier напрямую отсюда, а не из URL. Если бы verifier передавался через query/state,
-  // он бы засветился в адресной строке рядом с кодом — и вся защита PKCE (что знание кода
-  // без verifier бесполезно) пропала бы даром.
-  sessionStorage.setItem('sp_verifier', verifier);
+  // localStorage, не sessionStorage — на iOS переход на страницу подтверждения Spotify (или
+  // hand-off в само приложение Spotify, если оно установлено) иногда открывает возврат в НОВОЙ
+  // вкладке/контексте Safari, а sessionStorage привязан к конкретной вкладке и не переживает
+  // такое (было подтверждено живьём — вход "сбрасывало" именно на этом шаге). localStorage
+  // общий для всех вкладок одного источника (github.io), переживает эту ситуацию. Не query/
+  // state — verifier не должен светиться в адресной строке рядом с кодом, иначе вся защита
+  // PKCE (что знание кода без verifier бесполезно) пропала бы даром
+  localStorage.setItem('sp_verifier', verifier);
   const challenge = await challengeFor(verifier);
 
   const params = new URLSearchParams({
