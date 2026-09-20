@@ -1321,10 +1321,12 @@ static const char PAGE_HTML[] PROGMEM =
   "box.innerHTML='<div class=spEmpty>Ищем…</div>';"
   "try{"
   // URLSearchParams вместо ручной склейки строк — сама кодирует спецсимволы/кириллицу
-  // корректно. limit не задаём вовсе (Spotify берёт свой умолчательный, 20) — раньше
-  // явный limit=15 иногда возвращал "invalid limit" от Spotify без видимой причины.
+  // корректно. limit=15 когда-то давал "invalid limit" без видимой причины — оказалось,
+  // не случайность: в февральском сносе 2026 Spotify тихо урезал /search limit (максимум
+  // 50->10, умолчание 20->5) вместе с кучей других эндпоинтов (см. openArtistDetail() ниже
+  // за подробным списком). Явно просим потолок (10) — иначе получили бы всего 5 на каждый тип.
   // Три типа сразу одним запросом — Spotify поддерживает несколько type через запятую
-  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track,artist,playlist'}));"
+  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track,artist,playlist',limit:'10'}));"
   "let tracks=(d.tracks&&d.tracks.items)||[];"
   "let artists=(d.artists&&d.artists.items)||[];"
   // playlists.items может содержать null (удалённый/приватный плейлист в выдаче) — Spotify
@@ -1377,19 +1379,22 @@ static const char PAGE_HTML[] PROGMEM =
   // Mode (порог входа — 250K MAU, недостижим для домашнего проекта). Поиск /search?q=artist:"…"
   // тоже не годится заменой — фразовый фильтр находит только то, что попало в топ релевантности
   // текстового индекса, на практике иногда буквально 2-3 трека вместо всего каталога артиста.
-  // Настоящая замена — собственная дискография: /artists/{id}/albums жив (не в списке снесённых),
-  // затем ОДНИМ вызовом /albums?ids=… (Spotify отдаёт до 20 альбомов сразу, каждый уже со своими
-  // треками внутри — не нужен отдельный запрос на каждый альбом). limit не задаём — как и в
-  // spSearch() выше, явный limit тут тоже ловит от Spotify "invalid limit" без видимой причины;
-  // без него Spotify берёт свой умолчательный (20 — как раз потолок одного запроса /albums?ids=)
+  // Настоящая замена — собственная дискография: /artists/{id}/albums жив (не в списке снесённых).
+  // Раньше треки каждого альбома брались одним батч-вызовом /albums?ids=… — но GET /albums
+  // (batch "Get Several Albums") Spotify снёс в том же февральском сносе 2026, что и top-tracks
+  // (список снесённого широкий: batch-эндпоинты /albums, /artists, /tracks и др., save/unsave
+  // треков, GET /playlists/{id}/tracks и многое другое — не только top-tracks). Единственное,
+  // что осталось — брать альбомы по одному через GET /albums/{id} (не batch, её не тронули);
+  // берём их параллельно, а не последовательно, чтобы не ждать 20 round-trip'ов подряд. limit
+  // не задаём на /artists/{id}/albums — как и у /search, явный limit тут тоже может словить
+  // "invalid limit"; без него Spotify берёт свой умолчательный (20)
   "let albList=await spApi('/artists/'+artist.id+'/albums?'+"
   "new URLSearchParams({include_groups:'album,single'}));"
   "let albIds=(albList.items||[]).map(a=>a.id).slice(0,20);"
+  "let albs=await Promise.all(albIds.map(id=>spApi('/albums/'+id).catch(()=>null)));"
   "let tracks=[];"
-  "if(albIds.length){"
-  "let full=await spApi('/albums?'+new URLSearchParams({ids:albIds.join(',')}));"
-  "(full.albums||[]).forEach(alb=>{if(!alb)return;"
-  "(alb.tracks&&alb.tracks.items||[]).forEach(t=>{t.album={images:alb.images};tracks.push(t)})})}"
+  "albs.forEach(alb=>{if(!alb)return;"
+  "(alb.tracks&&alb.tracks.items||[]).forEach(t=>{t.album={images:alb.images};tracks.push(t)})});"
   // Один и тот же трек часто встречается и в альбоме, и синглом, и в переиздании — они получают
   // разные id, поэтому дедуп по имени+исполнителям, не по id, оставляя первое вхождение
   "let seen=new Set();tracks=tracks.filter(t=>{"
