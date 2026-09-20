@@ -71,6 +71,13 @@ async function challengeFor(verifier) {
       // без playlist-read-private приватные свои же плейлисты выглядели бы как "не ваш плейлист"
       'playlist-read-private',
       'playlist-read-collaborative',
+      // Вкладка "Топ" (личный топ треков/артистов) и подписки на артистов там же
+      'user-top-read',
+      'user-follow-read',
+      // "Добавить в плейлист" (создать новый + добавить трек) — оба нужны, какой именно
+      // потребуется, зависит от того, публичный итоговый плейлист или приватный
+      'playlist-modify-public',
+      'playlist-modify-private',
     ].join(' '),
     code_challenge_method: 'S256',
     code_challenge: challenge,
