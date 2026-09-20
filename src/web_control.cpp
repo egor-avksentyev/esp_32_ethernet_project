@@ -1158,25 +1158,6 @@ static const char PAGE_HTML[] PROGMEM =
   // не в query, поэтому сервер ESP32 его никогда не видит (см. пояснение там же). Once —
   // сразу вычищаем фрагмент из адресной строки, чтобы токен не остался виден и не
   // переобработался повторно при обновлении страницы
-  "(function spCaptureCallback(){"
-  "if(location.hash.indexOf('access_token=')===-1)return;"
-  "let p=new URLSearchParams(location.hash.slice(1));"
-  "spSaveTok({access:p.get('access_token'),refresh:p.get('refresh_token'),"
-  "exp:Date.now()+Number(p.get('expires_in'))*1000});"
-  "history.replaceState(null,'',location.pathname+location.search);"
-  // renderSpotifyAuth() ДО showSpotifyScreen() — иначе видимость spLoginWrap/spAppWrap ещё не
-  // обновлена (renderSpotifyAuth обычно вызывается один раз в самом хвосте скрипта, до него
-  // сюда мы ещё не дошли), и showSpotifyScreen() открывает экран, внутри которого и логин, и
-  // поиск всё ещё display:none по умолчанию из разметки — снаружи это выглядит как "пустой"
-  // экран Spotify сразу после входа. Функции объявлены через function — их можно звать отсюда,
-  // хоть они и определены ниже по тексту (hoisting)
-  "renderSpotifyAuth();"
-  // Раз попали сюда — значит вход начался с #spotifyScreen (spLogin() — единственное место,
-  // откуда вообще уходят на login.html), возвращаем ровно туда же, а не оставляем на обычном
-  // экране управления, где придётся снова тыкать "Spotify" вручную. Скрипт — в конце <body>,
-  // DOM уже разобран к этому моменту, вызываем сразу, без ожидания DOMContentLoaded
-  "showSpotifyScreen()"
-  "})();"
   "async function spRefresh(){"
   "let t=spTok();if(!t||!t.refresh)return null;"
   "let body=new URLSearchParams({client_id:SP_CLIENT_ID,grant_type:'refresh_token',refresh_token:t.refresh});"
@@ -1395,9 +1376,11 @@ static const char PAGE_HTML[] PROGMEM =
   // market/страна тут уже не спасают, эндпоинт отвечает 403 всем, у кого нет Extended Quota
   // Mode (порог входа — 250K MAU, недостижим для домашнего проекта). Замена — обычный поиск
   // треков по имени артиста: /search этим сносом не затронут, и Spotify внутри него сам
-  // сортирует по релевантности/популярности, что на практике и даёт список из топ-треков
+  // сортирует по релевантности/популярности, что на практике и даёт список из топ-треков.
+  // limit не задаём — как и в spSearch() выше, явный limit на /search иногда ловит от Spotify
+  // "invalid limit" без видимой причины; без него Spotify берёт свой умолчательный (20)
   "let q='artist:\"'+artist.name.replace(/\"/g,'')+'\"';"
-  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track',limit:'20'}));"
+  "let d=await spApi('/search?'+new URLSearchParams({q,type:'track'}));"
   "let tracks=(d.tracks&&d.tracks.items)||[];"
   "list.innerHTML='';"
   "if(!tracks.length){list.innerHTML='<div class=spEmpty>Нет данных</div>';return}"
@@ -1472,6 +1455,24 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('spDur').innerText=spFmtTime(item.duration_ms);"
   "if(!spVolDragging&&pb.device)document.getElementById('spVolSlider').value=pb.device.volume_percent;"
   "if(pb.device)spSetDeviceLabel(pb.device.name)}"
+  // Возврат из callback.html (см. docs/spotify/callback.html) — токен во фрагменте адреса, не
+  // в query, поэтому сервер ESP32 его никогда не видит. Специально в самом конце скрипта, а не
+  // сразу после spLogin()/spLogout() выше — раньше был там, и живой тест показал странную
+  // поломку (следующий клик по поиску падал на "Cannot access 'SP_HEART' before initialization",
+  // хотя тот объявлен ниже по тексту и должен был успеть выполниться до первого клика). Здесь,
+  // в самом хвосте, все функции/константы выше уже гарантированно объявлены к моменту вызова
+  "(function spCaptureCallback(){"
+  "if(location.hash.indexOf('access_token=')===-1)return;"
+  "let p=new URLSearchParams(location.hash.slice(1));"
+  "spSaveTok({access:p.get('access_token'),refresh:p.get('refresh_token'),"
+  "exp:Date.now()+Number(p.get('expires_in'))*1000});"
+  "history.replaceState(null,'',location.pathname+location.search);"
+  "renderSpotifyAuth();"
+  // Раз попали сюда — значит вход начался с #spotifyScreen (spLogin() — единственное место,
+  // откуда вообще уходят на login.html), возвращаем ровно туда же, а не оставляем на обычном
+  // экране управления, где придётся снова тыкать "Spotify" вручную
+  "showSpotifyScreen()"
+  "})();"
   "renderSpotifyAuth();"
   "</script></body></html>";
 
