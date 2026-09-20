@@ -74,6 +74,10 @@ async function challengeFor(verifier) {
       // Вкладка "Топ" (личный топ треков/артистов) и подписки на артистов там же
       'user-top-read',
       'user-follow-read',
+      // Вкладка "Недавнее" — без него /me/player/recently-played отвечает "insufficient
+      // client scope" (упустили при первом добавлении, хотя сам scope уже был указан
+      // в docs/spotify/API_STATUS.md — забыли перенести в реальный запрос)
+      'user-read-recently-played',
       // "Добавить в плейлист" (создать новый + добавить трек) — оба нужны, какой именно
       // потребуется, зависит от того, публичный итоговый плейлист или приватный
       'playlist-modify-public',
