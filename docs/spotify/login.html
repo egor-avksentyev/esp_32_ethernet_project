@@ -86,6 +86,14 @@ async function challengeFor(verifier) {
     code_challenge_method: 'S256',
     code_challenge: challenge,
     state: JSON.stringify({ r: returnUrl, v: verifier }),
+    // Официально show_dialog в списке параметров PKCE-flow не значится (только у обычного
+    // Authorization Code flow) — но /authorize один и тот же эндпоинт что там, что тут, PKCE
+    // лишь добавляет code_challenge поверх. Живой тест показал: без него добавление НОВОГО
+    // scope (user-read-recently-played) к уже одобренному пользователем приложению не помогало
+    // даже после явного "Выйти"+"Войти" — Spotify, похоже, тихо пропускал экран согласия и
+    // переиспользовал старое разрешение без нового scope ("insufficient client scope" при
+    // первом же запросе). show_dialog=true форсирует показ экрана согласия заново
+    show_dialog: 'true',
   });
   const authorizeUrl = 'https://accounts.spotify.com/authorize?' + params.toString();
   // "Выйти" на странице устройства (spLogout()) стирает только локальный токен — саму сессию
