@@ -27,6 +27,17 @@
 // кнопка — не привязано к сети вообще, whole repeat идёт локально на ESP32
 #define MOTOR_WS_REPEAT_MS 80
 
+// --- Постоянный push статуса/трека/доступности Arylic на веб-страницу (web_control.cpp,
+// liveWsBroadcastPoll()) — вместо того, чтобы браузер сам стучался на /status (1.5с),
+// /track (500мс) и /arylic-status (500мс) по отдельности (каждый — новое TCP-соединение,
+// WebServer.h не поддерживает keep-alive), ESP32 сам рассылает то же самое по одному
+// постоянному WebSocket-соединению. HTTP-эндпоинты остаются как были — клиент падает
+// обратно на них, если WebSocket недоступен (см. liveDataFresh() в PAGE_HTML) ---
+#define LIVE_WS_PORT 82
+// Тот же период, что был у самого частого из трёх опросов (/track, /arylic-status) — не
+// нужно рассылать чаще, странице этого не требуется
+#define LIVE_WS_PUSH_INTERVAL_MS 500
+
 // --- Метадата Arylic (arylic_metadata.h/.cpp) ---
 // Основной способ найти Arylic — mDNS-имя устройства (не зависит от того, какой IP ему в
 // очередной раз выдаст DHCP роутера). Найдено live через `dns-sd -B _linkplay._tcp local.`

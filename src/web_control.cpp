@@ -5,8 +5,19 @@
 #include "arylic_metadata.h"
 #include <WebServer.h>
 #include <WiFi.h>
+#include <WebSocketsServer.h>
 
 static WebServer server(WEB_SERVER_PORT);
+
+// Постоянный push статуса/трека/Arylic на веб-страницу — см. LIVE_WS_PORT (config.h) за
+// объяснением зачем, и liveWsBroadcastPoll() ниже за самой рассылкой. Один клиент ожидается
+// на практике (одна открытая вкладка), но WebSocketsServer сам поддерживает несколько —
+// рассылка широковещательная, лишнего кода под общий случай не потребовалось
+static WebSocketsServer liveWsServer(LIVE_WS_PORT);
+
+// Пустой обработчик — этот канал только для рассылки СЕРВЕРОМ, входящие сообщения от клиента
+// не ожидаются и ни на что не влияют (в отличие от motor_ws.h, где клиент шлёт "up"/"stop")
+static void handleLiveWsEvent(uint8_t, WStype_t, uint8_t*, size_t) {}
 
 // Последняя команда, отправленная на Mega. До 2026-09-21 было единственное, что ESP32 вообще
 // "знал" о состоянии системы (Mega ничего не отправляла назад) — теперь webPoweredOff ниже
@@ -1110,8 +1121,12 @@ static const char PAGE_HTML[] PROGMEM =
   "if(!I18N[saved])saved='uk';"
   "document.getElementById('langSelect').value=saved;"
   "applyLanguage(saved)})();"
-  "function poll(){fetch('/status').then(r=>r.json()).then(j=>{lastStatus=j;renderStatus()})}"
-  "setInterval(poll,1500);poll();"
+  // applyStatusData() отдельно от poll() — тем же телом пользуется постоянный push по
+  // WebSocket (см. connectLiveWs() ниже), poll() остаётся HTTP-фолбэком на случай, если он
+  // недоступен (liveDataFresh() гасит повторный HTTP-опрос, пока push реально приходит)
+  "function applyStatusData(j){lastStatus=j;renderStatus()}"
+  "function poll(){fetch('/status').then(r=>r.json()).then(applyStatusData)}"
+  "setInterval(function(){if(!liveDataFresh())poll()},1500);poll();"
   "function applyArylicIp(){"
   "let v=document.getElementById('arylicIp').value;"
   "fetch('/arylic-ip?ip='+encodeURIComponent(v),{method:'POST'})"
@@ -1119,7 +1134,8 @@ static const char PAGE_HTML[] PROGMEM =
   // Пока Arylic реально виден (см. arylicIsReachable() в arylic_metadata.cpp) — поле и кнопка
   // неактивны, ручной ввод не нужен; текущий определённый адрес подставляется в поле для
   // наглядности. Как только связь пропадает — поле включается само, без перезагрузки страницы
-  "function pollArylic(){fetch('/arylic-status').then(r=>r.text()).then(t=>{"
+  // applyArylicText() отдельно от pollArylic() — та же причина, что у applyStatusData() выше
+  "function applyArylicText(t){"
   "let parts=t.split(' ');let ok=(parts[0]=='OK');let ip=parts[1]||'';"
   "let el=document.getElementById('arylicIp');"
   "el.disabled=ok;document.getElementById('arylicApply').disabled=ok;"
@@ -1127,8 +1143,9 @@ static const char PAGE_HTML[] PROGMEM =
   // Play/Pause/Next/Prev и громкость видны, только пока Arylic реально доступен — не привязано
   // к j.playing (трек может быть на паузе, громкость и play всё равно нужны)
   "document.getElementById('playbackWrap').style.display=ok?'block':'none'"
-  "})}"
-  "setInterval(pollArylic,500);pollArylic();"
+  "}"
+  "function pollArylic(){fetch('/arylic-status').then(r=>r.text()).then(applyArylicText)}"
+  "setInterval(function(){if(!liveDataFresh())pollArylic()},500);pollArylic();"
   // play/pause через "onepause" — сам переключает состояние, не полагаясь на то, что
   // getPlayerStatus считает текущим (это поле неточное для AirPlay, см. arylic_metadata.h).
   // TLS-хендшейк ESP32 -> Arylic на команду занимает ~1.5-2с (замечено live, соединение не
@@ -1300,7 +1317,8 @@ static const char PAGE_HTML[] PROGMEM =
   // См. playPauseExpected/togglePlayPause() выше — та же гонка, что у volDragging/
   // trackSeekDragging: игнорируем любой ответ, не совпадающий с ожиданием, пока не совпадёт
   // (или не протухнет по таймауту, на случай если сама команда не применилась)
-  "function pollTrack(){fetch('/track').then(r=>r.json()).then(j=>{"
+  // applyTrackData() отдельно от pollTrack() — та же причина, что у applyStatusData() выше
+  "function applyTrackData(j){"
   "trackLen=j.len;"
   "if(playPauseExpected===null||j.playing===playPauseExpected||Date.now()-playPauseExpectedSince>4000){"
   "trackPlayingNow=j.playing;updatePlayVisuals(j.playing);playPauseExpected=null}"
@@ -1333,7 +1351,9 @@ static const char PAGE_HTML[] PROGMEM =
   // Пусто, если сервис её не отдаёт (например AirPlay/Apple Music, см. arylic_metadata.h) —
   // см. renderArt() за тем, что показывается вместо неё и как выбирается тема (круг/квадрат/куб)
   "renderArt(j.art,j.source);"
-  "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol})}"
+  "if(!volDragging&&j.vol>=0)document.getElementById('volSlider').value=j.vol"
+  "}"
+  "function pollTrack(){fetch('/track').then(r=>r.json()).then(applyTrackData)}"
   "function tickTrack(){"
   "document.getElementById('trackSeek').max=trackLen;"
   "if(!trackPlayingNow||trackSeekDragging)return;"
@@ -1373,7 +1393,46 @@ static const char PAGE_HTML[] PROGMEM =
   // её применит, как только флаг снимется — ползунок откатится назад, а через ещё пару
   // опросов снова прыгнет вперёд. Задержка ниже — запас на то, чтобы бэкенд сам догнал"
   "setTimeout(()=>{trackSeekDragging=false},1500)})}"
-  "setInterval(pollTrack,500);pollTrack();setInterval(tickTrack,500);"
+  "setInterval(function(){if(!liveDataFresh())pollTrack()},500);pollTrack();setInterval(tickTrack,500);"
+  // Постоянный push статуса/трека/Arylic по WebSocket (LIVE_WS_PORT, config.h) вместо того,
+  // чтобы poll()/pollTrack()/pollArylic() выше сами непрерывно стучались по HTTP — та же самая
+  // информация, просто без нового TCP-соединения (WebServer.h всегда шлёт Connection: close)
+  // на каждый отдельный опрос. HTTP-опросы выше НЕ убраны — liveDataFresh() просто гасит их,
+  // пока push реально приходит (свежее сообщение было меньше 3с назад); если WebSocket
+  // недоступен/оборвался — HTTP-фолбэк сам продолжает работать как раньше, страница не ломается
+  "let lastLiveMsgTime=0;"
+  "function liveDataFresh(){return Date.now()-lastLiveMsgTime<3000}"
+  "let liveWs=null;"
+  "let liveWsRetryDelay=1000;"
+  "function connectLiveWs(){"
+  "try{"
+  "liveWs=new WebSocket('ws://'+location.hostname+':82/');"
+  "liveWs.onopen=function(){liveWsRetryDelay=1000};"
+  "liveWs.onmessage=function(ev){"
+  "lastLiveMsgTime=Date.now();"
+  "let msg;"
+  "try{msg=JSON.parse(ev.data)}catch(e){return}"
+  "if(msg.type==='status')applyStatusData(msg.data);"
+  "else if(msg.type==='track')applyTrackData(msg.data);"
+  "else if(msg.type==='arylic')applyArylicText(msg.text)"
+  "};"
+  "liveWs.onclose=function(){liveWs=null;scheduleLiveWsReconnect()};"
+  "liveWs.onerror=function(){try{liveWs.close()}catch(e){}}"
+  "}catch(e){scheduleLiveWsReconnect()}"
+  "}"
+  "function scheduleLiveWsReconnect(){"
+  "setTimeout(connectLiveWs,liveWsRetryDelay);"
+  "liveWsRetryDelay=Math.min(liveWsRetryDelay*2,10000)"
+  "}"
+  "connectLiveWs();"
+  // Телефон часто рвёт WebSocket, когда вкладка уходит в фон (экран блокируется/сворачивается) —
+  // при возврате пробуем переподключиться сразу, не дожидаясь текущей паузы экспоненциального
+  // бэкоффа (та могла успеть вырасти до 10с, если вкладка была в фоне долго)
+  "document.addEventListener('visibilitychange',function(){"
+  "if(document.visibilityState==='visible'&&(!liveWs||liveWs.readyState!==WebSocket.OPEN)){"
+  "liveWsRetryDelay=1000;connectLiveWs()"
+  "}"
+  "});"
   // Дата/время — часы самого браузера, без сети (страница отдаётся по обычному HTTP, а
   // navigator.geolocation в незащищённом контексте браузеры всё равно не дают использовать —
   // поэтому геолокация ниже не через GPS, а по IP через сторонние публичные API)
@@ -2062,8 +2121,12 @@ static void handleCmd() {
 
 // JSON, не готовая строка на русском — текст ("Wi-Fi OK"/"отключён"/"последняя команда")
 // теперь собирает и переводит сам клиент (см. renderStatus() в PAGE_HTML, I18N), у ESP32
-// своего языка нет и быть не должно
-static void handleStatus() {
+// своего языка нет и быть не должно.
+//
+// Вынесена из handleStatus() отдельно — тем же телом пользуется и HTTP-обработчик (оставлен
+// как есть, простой и надёжный фолбэк), и постоянный push по WebSocket (см. liveWsBroadcastPoll()
+// ниже) — то же самое json, тот же смысл полей, просто два разных способа его доставить
+static String buildStatusJson() {
   String status = "{\"wifi\":";
   status += wifiIsConnected() ? "true" : "false";
   status += ",\"lastCmd\":\"";
@@ -2088,7 +2151,11 @@ static void handleStatus() {
   status += ",";
   status += String(megaLinkTemp(2), 1);
   status += "]}";
-  server.send(200, "application/json", status);
+  return status;
+}
+
+static void handleStatus() {
+  server.send(200, "application/json", buildStatusJson());
 }
 
 static void handleNotFound() {
@@ -2097,11 +2164,16 @@ static void handleNotFound() {
 
 // "OK <ip>" или "FAIL <ip>" (<ip> может быть пустым, если ещё ни разу не определился) —
 // используется JS на странице, чтобы включать/выключать поле ручного ввода и подставлять
-// туда текущий адрес (см. PAGE_HTML, pollArylic())
-static void handleArylicStatus() {
+// туда текущий адрес (см. PAGE_HTML, pollArylic()/handleArylicData()). Вынесена отдельно по
+// той же причине, что buildStatusJson() выше — общее тело для HTTP-фолбэка и WS-push
+static String buildArylicStatusText() {
   String resp = arylicIsReachable() ? "OK " : "FAIL ";
   resp += arylicCurrentIp();
-  server.send(200, "text/plain", resp);
+  return resp;
+}
+
+static void handleArylicStatus() {
+  server.send(200, "text/plain", buildArylicStatusText());
 }
 
 // Ручной ввод IP Arylic с веб-страницы — пустая строка снимает override (см.
@@ -2137,7 +2209,8 @@ static String jsonEscape(const String& raw) {
   return escaped;
 }
 
-static void handleTrack() {
+// Вынесена отдельно по той же причине, что buildStatusJson() выше
+static String buildTrackJson() {
   String resp = "{\"playing\":";
   resp += arylicTrackIsPlaying() ? "true" : "false";
   resp += ",\"text\":\"";
@@ -2155,7 +2228,11 @@ static void handleTrack() {
   resp += ",\"vol\":";
   resp += String(arylicCurrentVolume()); // -1, если ещё неизвестна — JS это условие проверяет
   resp += "}";
-  server.send(200, "application/json", resp);
+  return resp;
+}
+
+static void handleTrack() {
+  server.send(200, "application/json", buildTrackJson());
 }
 
 // Разрешённые действия управления воспроизведением — белый список, чтобы в API Arylic не
@@ -2236,6 +2313,27 @@ static void handleWifiForget() {
   ESP.restart();
 }
 
+// Рассылает всем открытым соединениям на LIVE_WS_PORT то же самое, что уже отдают
+// /status, /track, /arylic-status по отдельности — раз в LIVE_WS_PUSH_INTERVAL_MS, независимо
+// от того, изменилось ли что-то (та же простая периодика, что была у HTTP-опроса, просто без
+// TCP-хендшейка на каждый раз). "type" отличает три сообщения друг от друга на клиенте
+// (см. connectLiveWs() в PAGE_HTML) — сами JSON/текст идентичны тому, что вернул бы
+// соответствующий HTTP-эндпоинт
+static void liveWsBroadcastPoll() {
+  liveWsServer.loop();
+  static unsigned long lastBroadcast = 0;
+  if (liveWsServer.connectedClients() == 0) {
+    return; // никто не слушает — нечего считать/слать
+  }
+  if (millis() - lastBroadcast < LIVE_WS_PUSH_INTERVAL_MS) {
+    return;
+  }
+  lastBroadcast = millis();
+  liveWsServer.broadcastTXT("{\"type\":\"status\",\"data\":" + buildStatusJson() + "}");
+  liveWsServer.broadcastTXT("{\"type\":\"track\",\"data\":" + buildTrackJson() + "}");
+  liveWsServer.broadcastTXT("{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}");
+}
+
 void webControlBegin() {
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
@@ -2249,6 +2347,8 @@ void webControlBegin() {
   server.on("/seek", handleSeek);
   server.onNotFound(handleNotFound);
   server.begin();
+  liveWsServer.begin();
+  liveWsServer.onEvent(handleLiveWsEvent);
 
   Serial.print("[web] веб-морда поднята, зайди на http://");
   Serial.print(WiFi.localIP());
@@ -2258,4 +2358,5 @@ void webControlBegin() {
 
 void webControlPoll() {
   server.handleClient();
+  liveWsBroadcastPoll();
 }
