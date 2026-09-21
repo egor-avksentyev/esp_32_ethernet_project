@@ -344,7 +344,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<option value=uk>&#127482;&#127462; Українська</option>"
   "<option value=en>&#127468;&#127463; English</option>"
   "<option value=ro>&#127479;&#127476; Română</option>"
-  "<option value=ru>&#127479;&#127482; Русский</option>"
+  "<option value=ru>Русский</option>"
   "</select>"
   "<div style='text-align:right;max-width:55%'>"
   "<span id=dtClock style='font-size:.85em;color:#aaa'>--:--:--</span>"
