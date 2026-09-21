@@ -805,14 +805,22 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('powerOnLabel').innerText=I18N[currentLang].powerOn;"
   "}}"
   "setInterval(updatePowerOnBtn,250);"
-  // 80мс, не 150 — Mega останавливает мотор, если новой команды не было 260мс
-  // (SLIDER_MOTOR_IDLE_TIMEOUT, hardware_settings.h Mega-репозитория). При 150мс запас на
-  // случай одной задержавшейся/потерянной HTTP-заявки (обычное дело на Wi-Fi при долгом
-  // удержании, fetch() здесь fire-and-forget без ретраев) был всего 110мс — одна подвисшая
-  // заявка ощущалась как "мотор на секунду замер, потом продолжил". С 80мс даже 2 подряд
-  // потерянных заявки (160мс) всё ещё укладываются в таймаут
+  // Держим не больше ОДНОЙ одновременной заявки на месте — обычный cmd()/fetch() ничего не
+  // ждёт (fire-and-forget), и если ESP32/сеть хоть на миг подвиснет, setInterval ниже продолжит
+  // штамповать новые fetch() поверх ещё не завершившихся: браузер копит их в очередь (лимит
+  // одновременных соединений на источник), а после отпускания кнопки они не пропадают — все
+  // разом "доезжают" и мотор продолжает крутиться уже без пальца на кнопке, ровно на то время,
+  // сколько успело накопиться в очереди (то есть буквально "сколько держал после зависания").
+  // holdFetchInFlight — эту очередь и убирает: новый тик просто пропускается, если предыдущий
+  // ещё не получил ответ, вместо того чтобы копиться поверх него
+  "let holdFetchInFlight=false;"
+  "function holdTick(a){"
+  "if(holdFetchInFlight)return;"
+  "holdFetchInFlight=true;"
+  "fetch('/cmd?action='+a).catch(()=>{}).finally(()=>{holdFetchInFlight=false})"
+  "}"
   "let holdTimer=null;"
-  "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),80)}"
+  "function startHold(a){cmd(a);holdTimer=setInterval(()=>holdTick(a),80)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
   "function toggleCollapse(id){document.getElementById(id).classList.toggle('open')}"
   // Много столбиков на всю высоту, не 5 — иначе не похоже на настоящий эквалайзер. Генерируем
