@@ -8,7 +8,9 @@
 
 static HardwareSerial MegaSerial(2);
 
-static char lineBuf[32];
+// 64, не 32 — SCR:<name>:<inSettings>:<line1>:<line2>:<highlight> может доходить до полусотни
+// символов при длинных line1/line2 (например Dimmer: "SCR:Dimmer:1:LED 100%:Display 100%:2")
+static char lineBuf[64];
 static uint8_t lineLen = 0;
 
 static bool megaPowerKnown = false;
@@ -16,6 +18,22 @@ static bool megaPoweredOn = false;
 static float megaTemps[3] = {-127.0f, -127.0f, -127.0f}; // TEMP_SENSOR_INVALID на стороне Mega
 static bool megaVoltageKnown = false;
 static int megaVoltage = 0;
+
+static bool megaScreenKnown = false;
+static char megaScreenName[16] = "";
+static bool megaScreenInSettings = false;
+static char megaScreenLine1[20] = "";
+static char megaScreenLine2[20] = "";
+static uint8_t megaScreenHighlight = 0;
+static bool megaScreenIsColorFlag = false;
+static uint8_t megaScreenColorR = 0, megaScreenColorG = 0, megaScreenColorB = 0;
+
+static bool megaMuteKnownFlag = false;
+static bool megaMutedFlag = false;
+static bool megaBypassKnownFlag = false;
+static bool megaBypassOnFlag = false;
+static bool megaStreamerKnownFlag = false;
+static bool megaStreamerOnFlag = false;
 
 // Построчный приём — тот же приём, что esp32LinkPoll() на стороне Mega (esp32_link.cpp):
 // копим байты в статический буфер, разбираем по '\n', отбрасываем '\r'
@@ -44,6 +62,55 @@ static void handleMegaLine(char* line) {
   } else if (strncmp(line, "VOLT:", 5) == 0) {
     megaVoltageKnown = true;
     megaVoltage = atoi(line + 5);
+  } else if (strncmp(line, "SCR:", 4) == 0) {
+    char* p = line + 4;
+    char* sep1 = strchr(p, ':'); if (!sep1) return;
+    *sep1 = '\0'; char* name = p; p = sep1 + 1;
+    char* sep2 = strchr(p, ':'); if (!sep2) return;
+    *sep2 = '\0'; char* inSet = p; p = sep2 + 1;
+    char* sep3 = strchr(p, ':'); if (!sep3) return;
+    *sep3 = '\0'; char* l1 = p; p = sep3 + 1;
+    char* sep4 = strchr(p, ':'); if (!sep4) return;
+    *sep4 = '\0'; char* l2 = p; char* hl = sep4 + 1;
+    megaScreenKnown = true;
+    megaScreenIsColorFlag = false;
+    strncpy(megaScreenName, name, sizeof(megaScreenName) - 1);
+    megaScreenName[sizeof(megaScreenName) - 1] = '\0';
+    megaScreenInSettings = (inSet[0] == '1');
+    strncpy(megaScreenLine1, l1, sizeof(megaScreenLine1) - 1);
+    megaScreenLine1[sizeof(megaScreenLine1) - 1] = '\0';
+    strncpy(megaScreenLine2, l2, sizeof(megaScreenLine2) - 1);
+    megaScreenLine2[sizeof(megaScreenLine2) - 1] = '\0';
+    megaScreenHighlight = (uint8_t)atoi(hl);
+  } else if (strncmp(line, "COLOR:", 6) == 0) {
+    char* p = line + 6;
+    char* sep1 = strchr(p, ':'); if (!sep1) return;
+    *sep1 = '\0'; char* name = p; p = sep1 + 1;
+    char* sep2 = strchr(p, ':'); if (!sep2) return;
+    *sep2 = '\0'; char* rStr = p; p = sep2 + 1;
+    char* sep3 = strchr(p, ':'); if (!sep3) return;
+    *sep3 = '\0'; char* gStr = p; char* bStr = sep3 + 1;
+    megaScreenKnown = true;
+    megaScreenIsColorFlag = true;
+    megaScreenInSettings = true;
+    strncpy(megaScreenName, "Color", sizeof(megaScreenName) - 1);
+    megaScreenName[sizeof(megaScreenName) - 1] = '\0';
+    strncpy(megaScreenLine1, name, sizeof(megaScreenLine1) - 1);
+    megaScreenLine1[sizeof(megaScreenLine1) - 1] = '\0';
+    megaScreenLine2[0] = '\0';
+    megaScreenHighlight = 0;
+    megaScreenColorR = (uint8_t)atoi(rStr);
+    megaScreenColorG = (uint8_t)atoi(gStr);
+    megaScreenColorB = (uint8_t)atoi(bStr);
+  } else if (strncmp(line, "MUTE:", 5) == 0 && (line[5] == '0' || line[5] == '1') && line[6] == '\0') {
+    megaMuteKnownFlag = true;
+    megaMutedFlag = (line[5] == '1');
+  } else if (strncmp(line, "BYP:", 4) == 0 && (line[4] == '0' || line[4] == '1') && line[5] == '\0') {
+    megaBypassKnownFlag = true;
+    megaBypassOnFlag = (line[4] == '1');
+  } else if (strncmp(line, "STREAMER:", 9) == 0 && (line[9] == '0' || line[9] == '1') && line[10] == '\0') {
+    megaStreamerKnownFlag = true;
+    megaStreamerOnFlag = (line[9] == '1');
   }
 }
 
@@ -163,4 +230,68 @@ bool megaLinkVoltageKnown() {
 
 int megaLinkVoltage() {
   return megaVoltage;
+}
+
+bool megaLinkScreenKnown() {
+  return megaScreenKnown;
+}
+
+const char* megaLinkScreenName() {
+  return megaScreenName;
+}
+
+bool megaLinkScreenInSettings() {
+  return megaScreenInSettings;
+}
+
+const char* megaLinkScreenLine1() {
+  return megaScreenLine1;
+}
+
+const char* megaLinkScreenLine2() {
+  return megaScreenLine2;
+}
+
+uint8_t megaLinkScreenHighlight() {
+  return megaScreenHighlight;
+}
+
+bool megaLinkScreenIsColor() {
+  return megaScreenIsColorFlag;
+}
+
+uint8_t megaLinkScreenColorR() {
+  return megaScreenColorR;
+}
+
+uint8_t megaLinkScreenColorG() {
+  return megaScreenColorG;
+}
+
+uint8_t megaLinkScreenColorB() {
+  return megaScreenColorB;
+}
+
+bool megaLinkMuteKnown() {
+  return megaMuteKnownFlag;
+}
+
+bool megaLinkIsMuted() {
+  return megaMutedFlag;
+}
+
+bool megaLinkBypassKnown() {
+  return megaBypassKnownFlag;
+}
+
+bool megaLinkIsBypassOn() {
+  return megaBypassOnFlag;
+}
+
+bool megaLinkStreamerKnown() {
+  return megaStreamerKnownFlag;
+}
+
+bool megaLinkIsStreamerOn() {
+  return megaStreamerOnFlag;
 }

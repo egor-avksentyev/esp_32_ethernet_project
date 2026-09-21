@@ -41,6 +41,27 @@ float megaLinkTemp(uint8_t index);
 bool megaLinkVoltageKnown();
 int megaLinkVoltage();
 
+// Мини-экран (зеркало текущего экрана OLED) — см. SCR:/COLOR: в esp32_link.h Mega-репозитория
+// за полным протоколом. Строки уже готовы к показу как есть (то же самое, что Mega печатает
+// у себя на дисплее) — веб-странице не нужно ничего пересчитывать/хранить свои копии таблиц
+bool megaLinkScreenKnown(); // false, пока Mega ни разу не прислала SCR:/COLOR:
+const char* megaLinkScreenName();      // "Bass"/"Dimmer"/"Color"/... (menuItems[] на Mega)
+bool megaLinkScreenInSettings();       // карусель (false) или экран настройки пункта (true)
+const char* megaLinkScreenLine1();
+const char* megaLinkScreenLine2();     // непусто только для Dimmer
+uint8_t megaLinkScreenHighlight();     // 0 — нет данных, 1/2 — какая из двух строк активна (Dimmer)
+bool megaLinkScreenIsColor();          // true, если экран сейчас — Color (см. megaLinkScreenColor*)
+uint8_t megaLinkScreenColorR();
+uint8_t megaLinkScreenColorG();
+uint8_t megaLinkScreenColorB();
+
+bool megaLinkMuteKnown();
+bool megaLinkIsMuted();
+bool megaLinkBypassKnown();
+bool megaLinkIsBypassOn();
+bool megaLinkStreamerKnown();
+bool megaLinkIsStreamerOn();
+
 // Отправляет "CMD:<letter>\n" — letter один из: R L E U D M P S
 // (right/left/enter/up/down/mute/power/set — тот же словарь действий, что был
 // у WEB_ACTIONS в experiment/ethernet-arylic-webctl/src/web_control.cpp на Mega)

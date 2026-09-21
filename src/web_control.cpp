@@ -141,6 +141,18 @@ static const char PAGE_HTML[] PROGMEM =
   "#remoteCollapse,#settingsCollapse{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}"
   "#remoteCollapse.open,#settingsCollapse.open{grid-template-rows:1fr}"
   "#remoteCollapse>div,#settingsCollapse>div{overflow:hidden}"
+  // Мини-экран — своё оформление, не попиксельная копия OLED (тёмная карточка вместо
+  // монохромного дисплея, обычный веб-текст). dim — вторая строка Dimmer, которая сейчас НЕ
+  // редактируется (обе видны всегда, тусклее — не активная сейчас, а не "отсутствует")
+  "#megaScreen{background:#0a0a0a;border:1px solid rgba(160,160,160,.3);border-radius:8px;"
+  "padding:10px 12px;margin-bottom:10px;text-align:left}"
+  "#megaScreenName{font-size:.75em;color:#8cf;text-transform:uppercase;letter-spacing:.05em}"
+  "#megaScreenTags{font-size:.7em;color:#f66;letter-spacing:.05em}"
+  "#megaScreenSwatch{display:none;width:16px;height:16px;border-radius:4px;flex-shrink:0;"
+  "border:1px solid rgba(255,255,255,.3)}"
+  "#megaScreenLine1,#megaScreenLine2{font-size:1.2em;color:#8cf}"
+  "#megaScreenLine1.dim,#megaScreenLine2.dim{color:#666}"
+  "#megaScreenMuted{font-size:1.15em;color:#f66;text-align:center;font-weight:bold;padding:4px 0}"
   // Обложка — три темы на выбор (см. #artThemeSelect/applyArtTheme() ниже), выбор живёт в
   // localStorage (per-viewer, как язык). .themeCircle — модификатор "как пластинка": круглая,
   // крутится, пока играет (см. pollTrack()/updatePlayVisuals()). Без этого класса (тема
@@ -373,6 +385,21 @@ static const char PAGE_HTML[] PROGMEM =
   "<button id=remoteToggle onclick=toggleCollapse('remoteCollapse')>"
   "<span data-i18n=remoteControl>Remote Control</span></button>"
   "<div id=remoteCollapse><div>"
+  // Мини-экран — зеркало текущего экрана OLED Mega, чтобы не всматриваться в физическое
+  // устройство издалека (SCR:/COLOR:/MUTE:/BYP:/STREAMER: по UART, см. mega_link.h). Свой
+  // веб-стиль, не попиксельная копия — те же данные, что Mega уже печатает на дисплее (текст
+  // готовый, не индекс — веб-странице не нужно хранить свои копии sourceNames[]/eqPresets[]
+  // и т.п.). display:none, пока screenKnown==false (Mega ни разу не прислала своё состояние)
+  "<div id=megaScreen style='display:none'>"
+  "<div id=megaScreenNormal>"
+  "<div style='display:flex;align-items:center;justify-content:space-between'>"
+  "<span id=megaScreenName></span><span id=megaScreenTags></span></div>"
+  "<div style='display:flex;align-items:center;gap:8px;margin-top:4px'>"
+  "<span id=megaScreenSwatch></span><span id=megaScreenLine1></span></div>"
+  "<div id=megaScreenLine2></div>"
+  "</div>"
+  "<div id=megaScreenMuted style='display:none'></div>"
+  "</div>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
   "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
@@ -895,7 +922,7 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Нет сохранённых треков',spNoPlaylists:'Нет плейлистов',"
   "spNoSavedAlbums:'Нет сохранённых альбомов',spRecentEmpty:'Пока пусто',spNoFollowing:'Нет подписок',"
   "spNotEnoughData:'Пока недостаточно данных для статистики',spEmpty:'Пусто',spHttpCode:'код ',"
-  "megaLampLabel:'Лампа',megaVoltageLabel:'Напряжение',"
+  "megaLampLabel:'Лампа',megaVoltageLabel:'Напряжение',megaMutedLabel:'Заглушено',"
   "weather:{clear:'Ясно',cloudy:'Переменная облачность',overcast:'Пасмурно',fog:'Туман',"
   "drizzle:'Морось',freezingDrizzle:'Ледяная морось',rain:'Дождь',heavyRain:'Сильный дождь',"
   "freezingRain:'Ледяной дождь',snow:'Снег',heavySnow:'Сильный снег',snowGrains:'Снежная крупа',"
@@ -936,7 +963,7 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Немає збережених треків',spNoPlaylists:'Немає плейлистів',"
   "spNoSavedAlbums:'Немає збережених альбомів',spRecentEmpty:'Поки що порожньо',spNoFollowing:'Немає підписок',"
   "spNotEnoughData:'Поки що недостатньо даних для статистики',spEmpty:'Порожньо',spHttpCode:'код ',"
-  "megaLampLabel:'Лампа',megaVoltageLabel:'Напруга',"
+  "megaLampLabel:'Лампа',megaVoltageLabel:'Напруга',megaMutedLabel:'Приглушено',"
   "weather:{clear:'Ясно',cloudy:'Мінлива хмарність',overcast:'Похмуро',fog:'Туман',"
   "drizzle:'Мряка',freezingDrizzle:'Крижана мряка',rain:'Дощ',heavyRain:'Сильний дощ',"
   "freezingRain:'Крижаний дощ',snow:'Сніг',heavySnow:'Сильний сніг',snowGrains:'Снігова крупа',"
@@ -977,7 +1004,7 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Nicio piesă salvată',spNoPlaylists:'Niciun playlist',"
   "spNoSavedAlbums:'Niciun album salvat',spRecentEmpty:'Deocamdată gol',spNoFollowing:'Nu urmărești pe nimeni',"
   "spNotEnoughData:'Încă nu sunt suficiente date pentru statistici',spEmpty:'Gol',spHttpCode:'cod ',"
-  "megaLampLabel:'Lampă',megaVoltageLabel:'Tensiune',"
+  "megaLampLabel:'Lampă',megaVoltageLabel:'Tensiune',megaMutedLabel:'Fără sunet',"
   "weather:{clear:'Senin',cloudy:'Parțial noros',overcast:'Înnorat',fog:'Ceață',"
   "drizzle:'Burniță',freezingDrizzle:'Burniță înghețată',rain:'Ploaie',heavyRain:'Ploaie puternică',"
   "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
@@ -1018,7 +1045,7 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'No saved tracks',spNoPlaylists:'No playlists',"
   "spNoSavedAlbums:'No saved albums',spRecentEmpty:'Nothing yet',spNoFollowing:'Not following anyone',"
   "spNotEnoughData:'Not enough listening data yet',spEmpty:'Empty',spHttpCode:'code ',"
-  "megaLampLabel:'Lamp',megaVoltageLabel:'Voltage',"
+  "megaLampLabel:'Lamp',megaVoltageLabel:'Voltage',megaMutedLabel:'Muted',"
   "weather:{clear:'Clear',cloudy:'Partly cloudy',overcast:'Overcast',fog:'Fog',"
   "drizzle:'Drizzle',freezingDrizzle:'Freezing drizzle',rain:'Rain',heavyRain:'Heavy rain',"
   "freezingRain:'Freezing rain',snow:'Snow',heavySnow:'Heavy snow',snowGrains:'Snow grains',"
@@ -1051,6 +1078,39 @@ static const char PAGE_HTML[] PROGMEM =
   "if(lastStatus.voltageKnown)parts.push(t.megaVoltageLabel+': '+lastStatus.voltage+'V');"
   "ms.innerText=parts.join('  \\u00b7  ')"
   "}else{ms.innerText=''}"
+  // Мини-экран — та же логика "нет данных = не рисуем" (screenKnown), плюс отдельная ветка
+  // на Mute: пока включён, вместо обычного name/line1/line2 показываем только баннер —
+  // на самой Mega в этот момент экран тоже занят исключительно MUTE-анимацией, ничего
+  // другого не видно (см. mute_animation.h в Mega-репозитории)
+  "let mScreen=document.getElementById('megaScreen');"
+  "if(!lastStatus.screenKnown){mScreen.style.display='none'}"
+  "else{"
+  "mScreen.style.display='block';"
+  "let muted=lastStatus.muteKnown&&lastStatus.muted;"
+  "document.getElementById('megaScreenNormal').style.display=muted?'none':'block';"
+  "document.getElementById('megaScreenMuted').style.display=muted?'block':'none';"
+  "if(muted){"
+  "document.getElementById('megaScreenMuted').innerText=t.megaMutedLabel"
+  "}else{"
+  "document.getElementById('megaScreenName').innerText=lastStatus.screenName;"
+  "let tags=[];"
+  "if(lastStatus.bypassKnown&&lastStatus.bypassOn)tags.push('BYPASS');"
+  "if(lastStatus.streamerKnown&&lastStatus.streamerOn)tags.push('STREAMER');"
+  "document.getElementById('megaScreenTags').innerText=tags.join(' ');"
+  "document.getElementById('megaScreenLine1').innerText=lastStatus.screenLine1;"
+  "document.getElementById('megaScreenLine1').classList.toggle('dim',lastStatus.screenHighlight==2);"
+  "let l2=document.getElementById('megaScreenLine2');"
+  "if(lastStatus.screenLine2){"
+  "l2.style.display='block';l2.innerText=lastStatus.screenLine2;"
+  "l2.classList.toggle('dim',lastStatus.screenHighlight==1)"
+  "}else{l2.style.display='none'}"
+  "let sw=document.getElementById('megaScreenSwatch');"
+  "if(lastStatus.screenIsColor){"
+  "sw.style.display='inline-block';"
+  "sw.style.background='rgb('+lastStatus.screenColor.join(',')+')'"
+  "}else{sw.style.display='none'}"
+  "}"
+  "}"
   "}"
   // Состояние "выключено" теперь отражает настоящее состояние Mega (POWER: по UART, см.
   // applyWebPowerState() в web_control.cpp) — раньше (до 2026-09-21) было чисто оптимистичным
@@ -2041,6 +2101,8 @@ static void handleCmd() {
 // JSON, не готовая строка на русском — текст ("Wi-Fi OK"/"отключён"/"последняя команда")
 // теперь собирает и переводит сам клиент (см. renderStatus() в PAGE_HTML, I18N), у ESP32
 // своего языка нет и быть не должно
+static String jsonEscape(const String& raw); // определена ниже, нужна уже здесь
+
 static void handleStatus() {
   String status = "{\"wifi\":";
   status += wifiIsConnected() ? "true" : "false";
@@ -2065,7 +2127,44 @@ static void handleStatus() {
   status += String(megaLinkTemp(1), 1);
   status += ",";
   status += String(megaLinkTemp(2), 1);
-  status += "]}";
+  status += "]";
+  // Мини-экран (зеркало OLED) — см. mega_link.h. screenKnown==false, пока Mega ни разу не
+  // прислала SCR:/COLOR: — клиент в этом случае ничего не рисует, а не показывает нули/пустые
+  // значения как настоящие данные
+  status += ",\"screenKnown\":";
+  status += megaLinkScreenKnown() ? "true" : "false";
+  status += ",\"screenName\":\"";
+  status += jsonEscape(megaLinkScreenName());
+  status += "\",\"screenInSettings\":";
+  status += megaLinkScreenInSettings() ? "true" : "false";
+  status += ",\"screenLine1\":\"";
+  status += jsonEscape(megaLinkScreenLine1());
+  status += "\",\"screenLine2\":\"";
+  status += jsonEscape(megaLinkScreenLine2());
+  status += "\",\"screenHighlight\":";
+  status += megaLinkScreenHighlight();
+  status += ",\"screenIsColor\":";
+  status += megaLinkScreenIsColor() ? "true" : "false";
+  status += ",\"screenColor\":[";
+  status += megaLinkScreenColorR();
+  status += ",";
+  status += megaLinkScreenColorG();
+  status += ",";
+  status += megaLinkScreenColorB();
+  status += "]";
+  status += ",\"muteKnown\":";
+  status += megaLinkMuteKnown() ? "true" : "false";
+  status += ",\"muted\":";
+  status += megaLinkIsMuted() ? "true" : "false";
+  status += ",\"bypassKnown\":";
+  status += megaLinkBypassKnown() ? "true" : "false";
+  status += ",\"bypassOn\":";
+  status += megaLinkIsBypassOn() ? "true" : "false";
+  status += ",\"streamerKnown\":";
+  status += megaLinkStreamerKnown() ? "true" : "false";
+  status += ",\"streamerOn\":";
+  status += megaLinkIsStreamerOn() ? "true" : "false";
+  status += "}";
   server.send(200, "application/json", status);
 }
 
