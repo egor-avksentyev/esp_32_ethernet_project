@@ -37,4 +37,5 @@ void loop() {
   }
   wifiSetupMaintain();
   webControlPoll();
+  megaLinkPoll();
 }

@@ -1,22 +1,45 @@
 #pragma once
 
 // ============================================================================
-// mega_link.h/.cpp — единственный канал в сторону Mega: аппаратный UART (Serial2),
-// однонаправленный (ESP32 TX -> Mega RX2). Mega по этому проекту НИЧЕГО не отправляет
-// назад (см. README.md, "Mega только слушает") — поэтому здесь только send*(), нет
-// read/receive. Протокол — простые текстовые строки, см. описание в README.md,
-// "Протокол UART".
+// mega_link.h/.cpp — канал связи с Mega: аппаратный UART (Serial2). До 2026-09-21 был
+// однонаправленным (ESP32 TX -> Mega RX2, "Mega только слушает", см. README.md) — теперь
+// двусторонний: Mega тоже шлёт (см. megaLinkPoll()/POWER:/TEMP:/VOLT: ниже), через level
+// shifter (Mega — 5V логика, ESP32 GPIO не 5V-толерантны), MEGA_LINK_RX_PIN (config.h) с этого
+// момента реально подключён и читается. Протокол — простые текстовые строки, см. описание в
+// README.md, "Протокол UART", и в esp32_link.h Mega-репозитория (единый источник истины по
+// формату сообщений в обе стороны).
 //
-// Приёмник на стороне Mega реализован (esp32_link.h/.cpp, ветка feature/esp32-uart-receiver
-// в репозитории 260422-030547-megaatmega2560, 2026-09-10) — CMD:/IP:/PLAY:/ARYLIC:/SRC:/POS:
-// принимаются и используются (META:/PLAY:/SRC:/POS: двигают полноэкранный "Now Playing" и
-// автопереключение Source, IP:/ARYLIC: показываются в пункте меню Info).
+// Приёмник на стороне Mega реализован (esp32_link.h/.cpp в репозитории
+// 260422-030547-megaatmega2560) — CMD:/IP:/PLAY:/ARYLIC:/SRC:/POS: принимаются и используются
+// (META:/PLAY:/SRC:/POS: двигают полноэкранный "Now Playing" и автопереключение Source, IP:/
+// ARYLIC: показываются в пункте меню Info).
 // ============================================================================
 
 #include <Arduino.h>
 #include <IPAddress.h>
 
 void megaLinkBegin();
+
+// Вызывать из loop() каждую итерацию — разбирает POWER:/TEMP:/VOLT: от Mega (см. ниже),
+// тем же построчным приёмом, что esp32LinkPoll() на стороне Mega. При получении POWER: сама
+// вызывает applyWebPowerState() (web_control.h) — веб-страница гаснет/паузит Spotify
+// синхронно с реальным пультом, не только со своей собственной кнопки Power
+void megaLinkPoll();
+
+// true, если Mega хоть раз прислала своё состояние питания (POWER:) — до первого сообщения
+// (например сразу после перезагрузки ESP32) считать неизвестным, не "включено" по умолчанию
+bool megaLinkPowerKnown();
+bool megaLinkIsPoweredOn();
+
+// Температуры трёх ламп (см. TEMP: в esp32_link.h Mega-репозитория) — TEMP_SENSOR_INVALID
+// там же (-127.0), если конкретный датчик не отвечает. Валидно смотреть только после того,
+// как пришло хотя бы одно сообщение TEMP: (изначально все три — тот же сентинел -127.0)
+float megaLinkTemp(uint8_t index);
+
+// Напряжение сети (целые вольты) — см. VOLT: выше. megaLinkVoltageKnown() — то же самое
+// различение "ещё не приходило"/"пришло 0", что у megaLinkPowerKnown()
+bool megaLinkVoltageKnown();
+int megaLinkVoltage();
 
 // Отправляет "CMD:<letter>\n" — letter один из: R L E U D M P S
 // (right/left/enter/up/down/mute/power/set — тот же словарь действий, что был

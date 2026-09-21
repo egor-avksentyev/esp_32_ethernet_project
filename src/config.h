@@ -9,11 +9,11 @@
 
 // --- UART к Mega (mega_link.h/.cpp) ---
 // Используем аппаратный UART2 (Serial2 на ESP32) — UART0 занят USB/монитором и логом,
-// UART1 на многих платах занят SPI flash. Линия одна: ESP32 TX -> Mega RX (см. README.md,
-// "Mega только слушает" — обратного провода нет, RX2 этого ESP32 физически ни к чему
-// не подключаем).
+// UART1 на многих платах занят SPI flash. С 2026-09-21 линия двусторонняя: ESP32 TX -> Mega
+// RX2 (как и раньше) и Mega TX2 -> ESP32 RX через готовый модуль level shifter (Mega — 5V
+// логика, GPIO этого ESP32 не 5V-толерантны) — см. mega_link.h за протоколом POWER:/TEMP:/VOLT:
 #define MEGA_LINK_TX_PIN 17
-#define MEGA_LINK_RX_PIN 16 // не используется (Mega ничего не шлёт назад), но begin() требует пин
+#define MEGA_LINK_RX_PIN 16
 #define MEGA_LINK_BAUD 115200
 #define MEGA_LINK_META_MAX_LEN 40 // Максимум символов в строке "META:" — под однострочный показ на OLED
 
