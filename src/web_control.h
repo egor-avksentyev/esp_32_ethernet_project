@@ -18,9 +18,3 @@
 
 void webControlBegin();
 void webControlPoll(); // вызывать из loop() каждую итерацию
-
-// Гасит/зажигает веб-страницу и ставит/снимает паузу через локальный Arylic API — общая точка
-// для кнопки "Power" на самой странице (handleCmd()) и настоящего сигнала POWER: от Mega по
-// UART (см. mega_link.cpp). off — новое состояние (true = выключено); вызов с уже текущим
-// значением ничего не делает (см. определение в web_control.cpp)
-void applyWebPowerState(bool off);

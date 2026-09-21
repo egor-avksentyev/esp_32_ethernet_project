@@ -8,62 +8,24 @@
 
 static WebServer server(WEB_SERVER_PORT);
 
-// Последняя команда, отправленная на Mega. До 2026-09-21 было единственное, что ESP32 вообще
-// "знал" о состоянии системы (Mega ничего не отправляла назад) — теперь webPoweredOff ниже
-// отражает настоящее состояние питания Mega (см. POWER: в mega_link.h), но меню/громкость/
-// mute по-прежнему неизвестны ESP32 — см. README.md, "Известное ограничение: статус на веб-странице"
+// Последняя команда, отправленная на Mega — единственное, что ESP32 реально "знает"
+// о состоянии системы (Mega ничего не отправляет назад, см. mega_link.h). /status
+// показывает это плюс собственное состояние ESP32 (Wi-Fi), НЕ настоящее меню/громкость/
+// mute Mega — см. README.md, "Известное ограничение: статус на веб-странице"
 static char lastActionSent = '\0';
 
-// Что показывает ЭТА страница ("основной интерфейс" или большая кнопка "Power On"). С
-// 2026-09-21 отражает настоящее состояние питания Mega (см. applyWebPowerState() ниже,
-// вызывается и из handleCmd() при нажатии кнопки на самой странице, и из mega_link.cpp при
-// получении POWER: по UART) — раньше было чисто оптимистичным отражением последнего клика на
-// этой же странице, без понятия о реальном пульте. Флаг здесь, на ESP32, а не только в JS
-// вкладки — чтобы пережить перезагрузку страницы (см. handleStatus()/applyPowerState() в
-// PAGE_HTML): свежая вкладка сразу увидит то же состояние, не сбрасываясь в "включено" по умолчанию
+// Только веб-интерфейса это касается — что показывает ЭТА страница ("основной интерфейс" или
+// большая кнопка "Power On"), а не настоящее состояние Mega (узнать его отсюда неоткуда, см.
+// комментарий выше). Флаг здесь, на ESP32, а не только в JS вкладки — чтобы пережить
+// перезагрузку страницы (см. handleStatus()/applyPowerState() в PAGE_HTML): свежая вкладка
+// сразу увидит то же состояние, не сбрасываясь в "включено" по умолчанию
 static bool webPoweredOff = false;
 
-// true, только если паузу при выключении поставили именно мы (см. applyWebPowerState() ниже)
+// true, только если паузу при выключении поставили именно мы (см. handleCmd(), action=="power")
 // — а не если трек и так уже стоял на паузе сам по себе. Нужно, чтобы при обратном включении
 // возобновлять воспроизведение ТОЛЬКО в этом случае, а не запускать музыку, которую
 // пользователь сам поставил на паузу заранее
 static bool pausedByPowerOff = false;
-
-// Общая точка для обоих источников информации о питании — кнопка "Power" на самой веб-
-// странице (handleCmd(), не знает о реальном состоянии Mega, шлёт CMD:P и сразу переключает
-// оптимистично) и настоящий сигнал POWER: от Mega по UART (megaLinkOnPowerChanged() ниже,
-// вызывается из mega_link.cpp) — оба должны одинаково гасить/зажигать страницу и
-// ставить/снимать паузу Spotify через локальный Arylic API (не через Spotify Web API — тот
-// требует авторизации и не знает про AirPlay/другие источники, локальная пауза Arylic работает
-// независимо от того, что именно сейчас играет). Не делает ничего, если состояние не изменилось
-// — иначе периодический повтор POWER: от Mega (см. esp32_link.h) заново дёргал бы паузу/резюм
-// каждые несколько секунд, пока питание не менялось
-void applyWebPowerState(bool off) {
-  if (off == webPoweredOff) {
-    return;
-  }
-  webPoweredOff = off;
-  if (webPoweredOff) {
-    // На паузу — только уходя в выключенное состояние, и только если реально играет:
-    // onepause сам ПЕРЕКЛЮЧАЕТ play/pause (не имеет отдельной команды "только пауза"),
-    // так что при уже стоящей паузе эта же команда включила бы воспроизведение обратно
-    pausedByPowerOff = false;
-    if (arylicTrackIsPlaying()) {
-      if (arylicSendPlayerCommand("onepause")) {
-        arylicNotifyOnepausePressed();
-        pausedByPowerOff = true;
-      }
-    }
-  } else if (pausedByPowerOff) {
-    // Возобновляем, только если паузу поставили именно мы при выключении (см.
-    // pausedByPowerOff выше) — иначе рискуем запустить музыку, которую пользователь
-    // сам поставил на паузу заранее, ещё до выключения
-    if (arylicSendPlayerCommand("onepause")) {
-      arylicNotifyOnepausePressed();
-    }
-    pausedByPowerOff = false;
-  }
-}
 
 struct WebAction {
   const char* name;
@@ -386,11 +348,6 @@ static const char PAGE_HTML[] PROGMEM =
   "<div><button onclick=cmd('mute') data-i18n=mute>Mute</button>"
   "<button onclick=cmd('set') data-i18n=source>Source</button>"
   "<button onclick=powerOffClick() data-i18n=power>Power</button></div>"
-  // Температуры ламп/напряжение — приходят от Mega по UART (POWER:/TEMP:/VOLT:, см.
-  // mega_link.h), пробрасываются через уже существующий /status (renderStatus() ниже), а не
-  // отдельным эндпоинтом — эта панель и так опрашивается каждые 1.5с. Пусто, пока Mega ни разу
-  // не прислала своё состояние (megaKnown:false) — например сразу после включения ESP32
-  "<div id=megaSensors style='margin-top:8px;font-size:.94em;color:#999;text-align:center'></div>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt>"
@@ -895,7 +852,6 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Нет сохранённых треков',spNoPlaylists:'Нет плейлистов',"
   "spNoSavedAlbums:'Нет сохранённых альбомов',spRecentEmpty:'Пока пусто',spNoFollowing:'Нет подписок',"
   "spNotEnoughData:'Пока недостаточно данных для статистики',spEmpty:'Пусто',spHttpCode:'код ',"
-  "megaLampLabel:'Лампа',megaVoltageLabel:'Напряжение',"
   "weather:{clear:'Ясно',cloudy:'Переменная облачность',overcast:'Пасмурно',fog:'Туман',"
   "drizzle:'Морось',freezingDrizzle:'Ледяная морось',rain:'Дождь',heavyRain:'Сильный дождь',"
   "freezingRain:'Ледяной дождь',snow:'Снег',heavySnow:'Сильный снег',snowGrains:'Снежная крупа',"
@@ -936,7 +892,6 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Немає збережених треків',spNoPlaylists:'Немає плейлистів',"
   "spNoSavedAlbums:'Немає збережених альбомів',spRecentEmpty:'Поки що порожньо',spNoFollowing:'Немає підписок',"
   "spNotEnoughData:'Поки що недостатньо даних для статистики',spEmpty:'Порожньо',spHttpCode:'код ',"
-  "megaLampLabel:'Лампа',megaVoltageLabel:'Напруга',"
   "weather:{clear:'Ясно',cloudy:'Мінлива хмарність',overcast:'Похмуро',fog:'Туман',"
   "drizzle:'Мряка',freezingDrizzle:'Крижана мряка',rain:'Дощ',heavyRain:'Сильний дощ',"
   "freezingRain:'Крижаний дощ',snow:'Сніг',heavySnow:'Сильний сніг',snowGrains:'Снігова крупа',"
@@ -977,7 +932,6 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'Nicio piesă salvată',spNoPlaylists:'Niciun playlist',"
   "spNoSavedAlbums:'Niciun album salvat',spRecentEmpty:'Deocamdată gol',spNoFollowing:'Nu urmărești pe nimeni',"
   "spNotEnoughData:'Încă nu sunt suficiente date pentru statistici',spEmpty:'Gol',spHttpCode:'cod ',"
-  "megaLampLabel:'Lampă',megaVoltageLabel:'Tensiune',"
   "weather:{clear:'Senin',cloudy:'Parțial noros',overcast:'Înnorat',fog:'Ceață',"
   "drizzle:'Burniță',freezingDrizzle:'Burniță înghețată',rain:'Ploaie',heavyRain:'Ploaie puternică',"
   "freezingRain:'Ploaie înghețată',snow:'Ninsoare',heavySnow:'Ninsoare puternică',"
@@ -1018,7 +972,6 @@ static const char PAGE_HTML[] PROGMEM =
   "spNoSavedTracks:'No saved tracks',spNoPlaylists:'No playlists',"
   "spNoSavedAlbums:'No saved albums',spRecentEmpty:'Nothing yet',spNoFollowing:'Not following anyone',"
   "spNotEnoughData:'Not enough listening data yet',spEmpty:'Empty',spHttpCode:'code ',"
-  "megaLampLabel:'Lamp',megaVoltageLabel:'Voltage',"
   "weather:{clear:'Clear',cloudy:'Partly cloudy',overcast:'Overcast',fog:'Fog',"
   "drizzle:'Drizzle',freezingDrizzle:'Freezing drizzle',rain:'Rain',heavyRain:'Heavy rain',"
   "freezingRain:'Freezing rain',snow:'Snow',heavySnow:'Heavy snow',snowGrains:'Snow grains',"
@@ -1039,25 +992,12 @@ static const char PAGE_HTML[] PROGMEM =
   "let s=lastStatus.wifi?t.wifiOk:t.wifiOff;"
   "if(lastStatus.lastCmd)s+=' | '+t.lastCommand+': '+lastStatus.lastCmd;"
   "document.getElementById('status').innerText=s;"
-  "applyPowerState(lastStatus.poweredOff);"
-  // Температуры/напряжение — реально пришли от Mega по UART (см. handleStatus() на ESP32),
-  // не просто последняя отправленная команда. megaKnown==false — Mega ещё ни разу не
-  // присылала своё состояние (например ESP32 только что перезагрузился) — тогда пусто,
-  // не рисуем нули/прочерки, которые выглядели бы как настоящие показания
-  "let ms=document.getElementById('megaSensors');"
-  "if(lastStatus.megaKnown){"
-  "let parts=lastStatus.temps.map((v,i)=>t.megaLampLabel+' '+(i+1)+': '+"
-  "(v<=-100?'--':v)+'\\u00b0C');"
-  "if(lastStatus.voltageKnown)parts.push(t.megaVoltageLabel+': '+lastStatus.voltage+'V');"
-  "ms.innerText=parts.join('  \\u00b7  ')"
-  "}else{ms.innerText=''}"
-  "}"
-  // Состояние "выключено" теперь отражает настоящее состояние Mega (POWER: по UART, см.
-  // applyWebPowerState() в web_control.cpp) — раньше (до 2026-09-21) было чисто оптимистичным
-  // отражением последнего клика на ЭТОЙ веб-странице, Mega ничего не отправляла назад вообще.
-  // webPoweredOff всё ещё живёт на ESP32 (не только в JS вкладки) — переживает перезагрузку
-  // страницы: свежий /status сразу вернёт то, что было, и покажет нужный экран без лишнего
-  // мигания основным интерфейсом на долю секунды
+  "applyPowerState(lastStatus.poweredOff)}"
+  // Состояние "выключено" помнит САМ ESP32 (webPoweredOff в web_control.cpp — флаг именно
+  // ЭТОГО веб-интерфейса, а не настоящее состояние Mega, узнать которое неоткуда, см. README —
+  // "Mega ничего не отправляет назад"), а не только текущая вкладка браузера — поэтому
+  // переживает перезагрузку страницы: свежий /status сразу вернёт то, что было, и покажет
+  // нужный экран без лишнего мигания основным интерфейсом на долю секунды
   "let lastPoweredOff=null;"
   "function applyPowerState(off){"
   "if(off===lastPoweredOff)return;"
@@ -2026,10 +1966,30 @@ static void handleCmd() {
         megaLinkSendCommand(WEB_ACTIONS[i].letter);
         lastActionSent = WEB_ACTIONS[i].letter;
         if (action == "power") {
-          // Оптимистично, сразу по клику — настоящее подтверждение от Mega (POWER: по UART,
-          // см. applyWebPowerState()) придёт чуть позже и совпадёт с этим же значением
-          // (applyWebPowerState() не делает ничего повторно, если оно совпадает)
-          applyWebPowerState(!webPoweredOff);
+          // Само переключение состояния этой веб-вкладки (см. webPoweredOff выше) — Mega
+          // никогда не подтверждает, реально ли она включилась/выключилась (UART только в
+          // одну сторону), поэтому это оптимистичное отражение последнего нажатия, не более
+          webPoweredOff = !webPoweredOff;
+          if (webPoweredOff) {
+            // На паузу — только уходя в выключенное состояние, и только если реально играет:
+            // onepause сам ПЕРЕКЛЮЧАЕТ play/pause (не имеет отдельной команды "только пауза"),
+            // так что при уже стоящей паузе эта же команда включила бы воспроизведение обратно
+            pausedByPowerOff = false;
+            if (arylicTrackIsPlaying()) {
+              if (arylicSendPlayerCommand("onepause")) {
+                arylicNotifyOnepausePressed();
+                pausedByPowerOff = true;
+              }
+            }
+          } else if (pausedByPowerOff) {
+            // Возобновляем, только если паузу поставили именно мы при выключении (см.
+            // pausedByPowerOff выше) — иначе рискуем запустить музыку, которую пользователь
+            // сам поставил на паузу заранее, ещё до выключения
+            if (arylicSendPlayerCommand("onepause")) {
+              arylicNotifyOnepausePressed();
+            }
+            pausedByPowerOff = false;
+          }
         }
         break;
       }
@@ -2050,22 +2010,7 @@ static void handleStatus() {
   }
   status += "\",\"poweredOff\":";
   status += webPoweredOff ? "true" : "false";
-  // Реальное состояние/датчики Mega по UART (см. mega_link.h) — megaKnown==false, пока Mega
-  // ни разу не прислала POWER: (например сразу после перезагрузки самого ESP32); значения
-  // temps/voltage в этом случае бессмысленны, клиент (renderStatus() в PAGE_HTML) их не рисует
-  status += ",\"megaKnown\":";
-  status += megaLinkPowerKnown() ? "true" : "false";
-  status += ",\"voltageKnown\":";
-  status += megaLinkVoltageKnown() ? "true" : "false";
-  status += ",\"voltage\":";
-  status += megaLinkVoltage();
-  status += ",\"temps\":[";
-  status += String(megaLinkTemp(0), 1);
-  status += ",";
-  status += String(megaLinkTemp(1), 1);
-  status += ",";
-  status += String(megaLinkTemp(2), 1);
-  status += "]}";
+  status += "}";
   server.send(200, "application/json", status);
 }
 
