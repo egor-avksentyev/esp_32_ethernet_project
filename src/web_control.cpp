@@ -837,38 +837,25 @@ static const char PAGE_HTML[] PROGMEM =
   // (MOVE_THRESHOLD) — если сдвинулся дальше, чем на палец могло случайно дрогнуть на
   // месте, значит это скролл, подсветку либо не показываем вовсе (ещё не истёк таймер),
   // либо сразу гасим (уже показана)
-  // pointermove-порог (ниже) не всегда спасает: как только браузер сам распознаёт жест как
-  // скролл внутри overflow:auto контейнера (.spRowList/#spotifyScreen), он на телефоне часто
-  // вообще перестаёт слать pointermove в JS (уходит во внутренний нативный скролл, отдаёт
-  // странице только pointercancel, и то не всегда быстро) — порог по сдвигу физически не
-  // успевает сработать. Настоящая защита — слушать сам факт скролла ('scroll' не всплывает,
-  // поэтому только через capture-фазу на document — это ловит скролл ЛЮБОГО контейнера
-  // внутри) и гасить подсветку немедленно по факту, а не пытаться угадать по движению пальца
-  "(function setupSpTapFeedback(){"
-  "let pressedEl=null,pressTimer=null,pendingEl=null,startX=0,startY=0;"
-  "const MOVE_THRESHOLD=10,PRESS_DELAY=80;"
-  "function release(){"
-  "if(pressTimer){clearTimeout(pressTimer);pressTimer=null}"
-  "pendingEl=null;"
-  "if(pressedEl){pressedEl.classList.remove('pressed');pressedEl=null}}"
-  "document.getElementById('spotifyScreen').addEventListener('pointerdown',function(e){"
+  // Пробовали ловить нажатие через pointerdown + таймер/порог сдвига/событие scroll — не
+  // помогло: на телефоне браузер, распознав скролл, часто вообще не шлёт pointermove/
+  // pointercancel вовремя (или не шлёт совсем), так что любая попытка самим угадать
+  // "тап это или скролл" по сырым координатам — гонка, которую можно проиграть. Настоящее,
+  // уже готовое решение — сам браузер: 'click' физически НЕ происходит, если палец увёл
+  // дальше платформенного порога скролла между touchstart/touchend (это правило соблюдают
+  // все браузеры, ради него ничего не нужно реализовывать самим). Поэтому подсветка теперь
+  // просто отзывается на click, а не пытается предсказать его на pointerdown — сама
+  // подсветка появляется чуть позже (уже после того как палец отпущен), зато НИКОГДА не
+  // взводится на скролл, потому что click с него в принципе не приходит.
+  // capture:true — иначе клик по вложенным .spHeart/.spPillBtn (у них e.stopPropagation(),
+  // чтобы не запускать заодно проигрывание строки) не всплыл бы досюда вообще: capture-фаза
+  // идёт сверху вниз ДО того, как обработчик на самой кнопке успеет остановить всплытие
+  "document.getElementById('spotifyScreen').addEventListener('click',function(e){"
   "let el=e.target.closest('#spotifyScreen button,#spotifyScreen .spRow');"
   "if(!el)return;"
-  "release();"
-  "pendingEl=el;startX=e.clientX;startY=e.clientY;"
-  "pressTimer=setTimeout(function(){"
-  "pressedEl=pendingEl;pendingEl=null;"
-  "if(pressedEl)pressedEl.classList.add('pressed')"
-  "},PRESS_DELAY)"
-  "});"
-  "document.addEventListener('pointermove',function(e){"
-  "if(!pendingEl&&!pressedEl)return;"
-  "if(Math.abs(e.clientX-startX)>MOVE_THRESHOLD||Math.abs(e.clientY-startY)>MOVE_THRESHOLD)release()"
-  "});"
-  "document.addEventListener('scroll',release,true);"
-  "document.addEventListener('pointerup',release);"
-  "document.addEventListener('pointercancel',release)"
-  "})();"
+  "el.classList.add('pressed');"
+  "setTimeout(function(){el.classList.remove('pressed')},150)"
+  "},true);"
   // Все три языка целиком на клиенте — переключение мгновенное, без похода на сервер и без
   // перезагрузки страницы. НЕ переводятся (сознательно): название трека/исполнителя и имя
   // источника (Spotify/AirPlay/...) — это данные, пришедшие от Arylic, не текст интерфейса
