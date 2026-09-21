@@ -830,14 +830,34 @@ static const char PAGE_HTML[] PROGMEM =
   // строке трека/артиста/плейлиста. pointerup/pointercancel — на document, не на самом
   // элементе: палец может соскользнуть за пределы кнопки перед отпусканием, тогда обычный
   // "pointerup на этом же элементе" не сработал бы, и подсветка осталась бы висеть навсегда
+  // Задержка (PRESS_DELAY) перед тем, как реально показать .pressed — иначе при скролле
+  // (зажал и потащил вверх/вниз по списку) подсветка успевала мелькнуть на строке ДО того,
+  // как браузер распознавал жест как скролл, а не тап: pointerdown стреляет сразу же вне
+  // зависимости от того, чем обернётся жест дальше. Плюс отмена по факту движения пальца
+  // (MOVE_THRESHOLD) — если сдвинулся дальше, чем на палец могло случайно дрогнуть на
+  // месте, значит это скролл, подсветку либо не показываем вовсе (ещё не истёк таймер),
+  // либо сразу гасим (уже показана)
   "(function setupSpTapFeedback(){"
-  "let pressedEl=null;"
+  "let pressedEl=null,pressTimer=null,pendingEl=null,startX=0,startY=0;"
+  "const MOVE_THRESHOLD=10,PRESS_DELAY=80;"
+  "function release(){"
+  "if(pressTimer){clearTimeout(pressTimer);pressTimer=null}"
+  "pendingEl=null;"
+  "if(pressedEl){pressedEl.classList.remove('pressed');pressedEl=null}}"
   "document.getElementById('spotifyScreen').addEventListener('pointerdown',function(e){"
   "let el=e.target.closest('#spotifyScreen button,#spotifyScreen .spRow');"
   "if(!el)return;"
-  "pressedEl=el;pressedEl.classList.add('pressed')"
+  "release();"
+  "pendingEl=el;startX=e.clientX;startY=e.clientY;"
+  "pressTimer=setTimeout(function(){"
+  "pressedEl=pendingEl;pendingEl=null;"
+  "if(pressedEl)pressedEl.classList.add('pressed')"
+  "},PRESS_DELAY)"
   "});"
-  "function release(){if(pressedEl){pressedEl.classList.remove('pressed');pressedEl=null}}"
+  "document.addEventListener('pointermove',function(e){"
+  "if(!pendingEl&&!pressedEl)return;"
+  "if(Math.abs(e.clientX-startX)>MOVE_THRESHOLD||Math.abs(e.clientY-startY)>MOVE_THRESHOLD)release()"
+  "});"
   "document.addEventListener('pointerup',release);"
   "document.addEventListener('pointercancel',release)"
   "})();"
