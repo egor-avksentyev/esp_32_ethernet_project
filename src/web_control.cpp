@@ -805,8 +805,14 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('powerOnLabel').innerText=I18N[currentLang].powerOn;"
   "}}"
   "setInterval(updatePowerOnBtn,250);"
+  // 80мс, не 150 — Mega останавливает мотор, если новой команды не было 260мс
+  // (SLIDER_MOTOR_IDLE_TIMEOUT, hardware_settings.h Mega-репозитория). При 150мс запас на
+  // случай одной задержавшейся/потерянной HTTP-заявки (обычное дело на Wi-Fi при долгом
+  // удержании, fetch() здесь fire-and-forget без ретраев) был всего 110мс — одна подвисшая
+  // заявка ощущалась как "мотор на секунду замер, потом продолжил". С 80мс даже 2 подряд
+  // потерянных заявки (160мс) всё ещё укладываются в таймаут
   "let holdTimer=null;"
-  "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),150)}"
+  "function startHold(a){cmd(a);holdTimer=setInterval(()=>cmd(a),80)}"
   "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
   "function toggleCollapse(id){document.getElementById(id).classList.toggle('open')}"
   // Много столбиков на всю высоту, не 5 — иначе не похоже на настоящий эквалайзер. Генерируем
