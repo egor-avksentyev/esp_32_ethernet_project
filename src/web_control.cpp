@@ -805,23 +805,31 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('powerOnLabel').innerText=I18N[currentLang].powerOn;"
   "}}"
   "setInterval(updatePowerOnBtn,250);"
-  // Держим не больше ОДНОЙ одновременной заявки на месте — обычный cmd()/fetch() ничего не
-  // ждёт (fire-and-forget), и если ESP32/сеть хоть на миг подвиснет, setInterval ниже продолжит
-  // штамповать новые fetch() поверх ещё не завершившихся: браузер копит их в очередь (лимит
-  // одновременных соединений на источник), а после отпускания кнопки они не пропадают — все
-  // разом "доезжают" и мотор продолжает крутиться уже без пальца на кнопке, ровно на то время,
-  // сколько успело накопиться в очереди (то есть буквально "сколько держал после зависания").
-  // holdFetchInFlight — эту очередь и убирает: новый тик просто пропускается, если предыдущий
-  // ещё не получил ответ, вместо того чтобы копиться поверх него
-  "let holdFetchInFlight=false;"
-  "function holdTick(a){"
-  "if(holdFetchInFlight)return;"
-  "holdFetchInFlight=true;"
-  "fetch('/cmd?action='+a).catch(()=>{}).finally(()=>{holdFetchInFlight=false})"
+  // Удержание Up/Down — отдельное постоянное WebSocket-соединение (motor_ws.h/.cpp, порт 81),
+  // не повторный fetch('/cmd') по таймеру. Раньше каждый тик открывал НОВОЕ TCP-соединение
+  // (WebServer.h на ESP32 всегда шлёт Connection: close) — на Wi-Fi установка соединения
+  // изредка занимает заметно дольше обычного (особенно с телефона, энергосбережение радио),
+  // из-за чего мотор коротко замирал прямо во время удержания. Сначала пробовали лечить это
+  // ограничением на одну заявку одновременно (см. историю в памяти проекта) — та убрала
+  // "докручивание после отпускания", но не сами паузы во время удержания, т.к. дело было не
+  // в очереди, а в цене открытия соединения на каждый тик. Здесь соединение одно на весь hold,
+  // ESP32 сам, локально, повторяет CMD:U/D — сеть не участвует, пока кнопка держится
+  "let holdWs=null;"
+  "function startHold(a){"
+  "cmd(a);"
+  "try{"
+  "holdWs=new WebSocket('ws://'+location.hostname+':81/');"
+  "holdWs.onopen=function(){holdWs.send(a)};"
+  "holdWs.onerror=function(){};"
+  "}catch(e){}"
   "}"
-  "let holdTimer=null;"
-  "function startHold(a){cmd(a);holdTimer=setInterval(()=>holdTick(a),80)}"
-  "function stopHold(){if(holdTimer){clearInterval(holdTimer);holdTimer=null}}"
+  "function stopHold(){"
+  "if(holdWs){"
+  "try{holdWs.send('stop')}catch(e){}"
+  "try{holdWs.close()}catch(e){}"
+  "holdWs=null"
+  "}"
+  "}"
   "function toggleCollapse(id){document.getElementById(id).classList.toggle('open')}"
   // Много столбиков на всю высоту, не 5 — иначе не похоже на настоящий эквалайзер. Генерируем
   // через JS, а не перечисляем вручную десятки CSS-правил nth-child(N): top равномерно по

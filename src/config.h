@@ -20,6 +20,13 @@
 // --- Веб-страница управления (web_control.h/.cpp) ---
 #define WEB_SERVER_PORT 80
 
+// --- Постоянное соединение под удержание Up/Down (motor_ws.h/.cpp) — см. подробное объяснение
+// там же за тем, почему не переиспользуется обычный /cmd (WebServer.h/handleCmd()) ---
+#define MOTOR_WS_PORT 81
+// Как часто ESP32 сам шлёт очередной CMD:U/D на Mega, пока соединение открыто и держится
+// кнопка — не привязано к сети вообще, whole repeat идёт локально на ESP32
+#define MOTOR_WS_REPEAT_MS 80
+
 // --- Метадата Arylic (arylic_metadata.h/.cpp) ---
 // Основной способ найти Arylic — mDNS-имя устройства (не зависит от того, какой IP ему в
 // очередной раз выдаст DHCP роутера). Найдено live через `dns-sd -B _linkplay._tcp local.`

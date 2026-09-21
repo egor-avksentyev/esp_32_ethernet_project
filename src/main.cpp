@@ -6,6 +6,7 @@
 #include "mega_link.h"
 #include "web_control.h"
 #include "arylic_metadata.h"
+#include "motor_ws.h"
 
 // true, пока идёт настройка Wi-Fi (своя точка доступа, см. wifi_provisioning.h) — обычная
 // работа (веб-управление/метадата) в этом режиме не имеет смысла, реальной сети ещё нет
@@ -22,6 +23,7 @@ void setup() {
     MDNS.begin("esp32-audio-webctl");
     webControlBegin();
     arylicMetadataBegin();
+    motorWsBegin();
   } else {
     // Сохранённой сети нет или она не отвечает (например устройство перенесли в другой дом) —
     // вместо обычной работы поднимаем AP-режим настройки, см. wifi_provisioning.h
@@ -38,4 +40,5 @@ void loop() {
   wifiSetupMaintain();
   webControlPoll();
   megaLinkPoll();
+  motorWsPoll();
 }
