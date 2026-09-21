@@ -837,6 +837,13 @@ static const char PAGE_HTML[] PROGMEM =
   // (MOVE_THRESHOLD) — если сдвинулся дальше, чем на палец могло случайно дрогнуть на
   // месте, значит это скролл, подсветку либо не показываем вовсе (ещё не истёк таймер),
   // либо сразу гасим (уже показана)
+  // pointermove-порог (ниже) не всегда спасает: как только браузер сам распознаёт жест как
+  // скролл внутри overflow:auto контейнера (.spRowList/#spotifyScreen), он на телефоне часто
+  // вообще перестаёт слать pointermove в JS (уходит во внутренний нативный скролл, отдаёт
+  // странице только pointercancel, и то не всегда быстро) — порог по сдвигу физически не
+  // успевает сработать. Настоящая защита — слушать сам факт скролла ('scroll' не всплывает,
+  // поэтому только через capture-фазу на document — это ловит скролл ЛЮБОГО контейнера
+  // внутри) и гасить подсветку немедленно по факту, а не пытаться угадать по движению пальца
   "(function setupSpTapFeedback(){"
   "let pressedEl=null,pressTimer=null,pendingEl=null,startX=0,startY=0;"
   "const MOVE_THRESHOLD=10,PRESS_DELAY=80;"
@@ -858,6 +865,7 @@ static const char PAGE_HTML[] PROGMEM =
   "if(!pendingEl&&!pressedEl)return;"
   "if(Math.abs(e.clientX-startX)>MOVE_THRESHOLD||Math.abs(e.clientY-startY)>MOVE_THRESHOLD)release()"
   "});"
+  "document.addEventListener('scroll',release,true);"
   "document.addEventListener('pointerup',release);"
   "document.addEventListener('pointercancel',release)"
   "})();"
