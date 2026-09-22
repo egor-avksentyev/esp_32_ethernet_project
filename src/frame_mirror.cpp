@@ -21,6 +21,13 @@ static uint8_t frameBuf[FRAME_MIRROR_PAYLOAD_LEN];
 static uint16_t bufPos = 0;
 
 void frameMirrorBegin() {
+  // 256 байт по умолчанию у HardwareSerial (arduino-esp32) — меньше одного кадра (1027 байт,
+  // ~20мс на 500000 бод). Если loop() хоть немного задержится между вызовами frameMirrorPoll()
+  // (конкурирует за время с WebServer/WebSocket-серверами), буфер переполняется и часть байт
+  // теряется — кадр рассыпается на чексумме КАЖДЫЙ раз, кадры не проходят вообще никогда,
+  // хотя провод и Mega исправны. Явно увеличиваем — с запасом на пару кадров, ДО begin()
+  // (после begin() уже не действует)
+  FrameMirrorSerial.setRxBufferSize(FRAME_MIRROR_PAYLOAD_LEN * 2);
   // TX не нужен (канал строго Mega->ESP32) — -1 оставляет его непривязанным
   FrameMirrorSerial.begin(FRAME_MIRROR_BAUD, SERIAL_8N1, FRAME_MIRROR_RX_PIN, -1);
 }
