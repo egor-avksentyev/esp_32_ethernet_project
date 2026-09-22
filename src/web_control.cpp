@@ -493,7 +493,7 @@ static const char PAGE_HTML[] PROGMEM =
   "<div style='margin-top:14px'>"
   "<input id=arylicIp type=text placeholder='IP Arylic вручную' style='padding:8px;border-radius:6px;border:none'>"
   "<button id=arylicApply onclick=applyArylicIp() data-i18n=apply>Применить</button></div>"
-  "<div><button onclick=forgetWifi() style='background:#733' data-i18n=changeWifi>Сменить Wi-Fi</button></div>"
+  "<div><button onclick=factoryReset() style='background:#733' data-i18n=factoryReset>Заводской сброс</button></div>"
   "</div></div>"
   "</div>"
   // Показывается вместо #mainContent, пока выключено (см. applyPowerState()) — большая круглая
@@ -927,10 +927,10 @@ static const char PAGE_HTML[] PROGMEM =
   "artThemeCube:'3D-куб',artThemePyramid:'3D-пирамида',"
   "ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
   "powerOn:'Включить',poweringOff:'Выключение',"
-  "apply:'Применить',ipPlaceholder:'IP Arylic вручную',changeWifi:'Сменить Wi-Fi',"
+  "apply:'Применить',ipPlaceholder:'IP Arylic вручную',factoryReset:'Заводской сброс',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
   "invalidIp:'Некорректный IP',"
-  "forgetWifiConfirm:'Забыть текущую Wi-Fi сеть и перезагрузиться в режим настройки?',"
+  "factoryResetConfirm:'Выйти из Spotify, сбросить Arylic до заводских настроек и сам ESP32 (перезагрузится в режим настройки)?',"
   "forgetWifiDone:'Готово. Устройство подняло точку доступа ',"
   "spBack:'\\u2190 Назад',spBackToSearch:'\\u2190 Назад к поиску',spLoginBtn:'Войти через Spotify',"
   "spTabSearch:'Поиск',spTabLib:'Мои треки',spTabAlbums:'Мои альбомы',spTabPlaylists:'Мои плейлисты',"
@@ -968,10 +968,10 @@ static const char PAGE_HTML[] PROGMEM =
   "artThemeCube:'3D-куб',artThemePyramid:'3D-піраміда',"
   "ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
   "powerOn:'Увімкнути',poweringOff:'Вимкнення',"
-  "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',changeWifi:'Змінити Wi-Fi',"
+  "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',factoryReset:'Заводське скидання',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
   "invalidIp:'Некоректний IP',"
-  "forgetWifiConfirm:'Забути поточну мережу Wi-Fi і перезавантажитися в режим налаштування?',"
+  "factoryResetConfirm:'Вийти зі Spotify, скинути Arylic до заводських налаштувань і сам ESP32 (перезавантажиться в режим налаштування)?',"
   "forgetWifiDone:'Готово. Пристрій підняв точку доступу ',"
   "spBack:'\\u2190 Назад',spBackToSearch:'\\u2190 Назад до пошуку',spLoginBtn:'Увійти через Spotify',"
   "spTabSearch:'Пошук',spTabLib:'Мої треки',spTabAlbums:'Мої альбоми',spTabPlaylists:'Мої плейлисти',"
@@ -1009,10 +1009,10 @@ static const char PAGE_HTML[] PROGMEM =
   "artThemeCube:'Cub 3D',artThemePyramid:'Piramidă 3D',"
   "ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
   "powerOn:'Pornește',poweringOff:'Se oprește',"
-  "apply:'Aplică',ipPlaceholder:'IP Arylic manual',changeWifi:'Schimbă Wi-Fi',"
+  "apply:'Aplică',ipPlaceholder:'IP Arylic manual',factoryReset:'Resetare din fabrică',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
   "invalidIp:'IP invalid',"
-  "forgetWifiConfirm:'Uiți rețeaua Wi-Fi curentă și repornești în modul de configurare?',"
+  "factoryResetConfirm:'Te deloghezi din Spotify, resetezi Arylic la setările din fabrică și ESP32-ul însuși (repornește în modul de configurare)?',"
   "forgetWifiDone:'Gata. Dispozitivul a pornit punctul de acces ',"
   "spBack:'\\u2190 Înapoi',spBackToSearch:'\\u2190 Înapoi la căutare',spLoginBtn:'Conectare cu Spotify',"
   "spTabSearch:'Căutare',spTabLib:'Piesele mele',spTabAlbums:'Albumele mele',"
@@ -1050,10 +1050,10 @@ static const char PAGE_HTML[] PROGMEM =
   "artThemeCube:'3D cube',artThemePyramid:'3D pyramid',"
   "ok:'OK',mute:'Mute',source:'Source',power:'Power',"
   "powerOn:'Power On',poweringOff:'Powering off',"
-  "apply:'Apply',ipPlaceholder:'Arylic IP manually',changeWifi:'Change Wi-Fi',"
+  "apply:'Apply',ipPlaceholder:'Arylic IP manually',factoryReset:'Factory reset',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
   "invalidIp:'Invalid IP',"
-  "forgetWifiConfirm:'Forget the current Wi-Fi network and reboot into setup mode?',"
+  "factoryResetConfirm:'Log out of Spotify, factory-reset the Arylic and the ESP32 itself (it will reboot into setup mode)?',"
   "forgetWifiDone:'Done. The device brought up the access point ',"
   "spBack:'\\u2190 Back',spBackToSearch:'\\u2190 Back to search',spLoginBtn:'Log in with Spotify',"
   "spTabSearch:'Search',spTabLib:'My tracks',spTabAlbums:'My albums',spTabPlaylists:'My playlists',"
@@ -1518,9 +1518,14 @@ static const char PAGE_HTML[] PROGMEM =
   "document.getElementById('weatherText').innerText=lastWeatherCity+': '+lastWeatherTemp+'°C, '+desc}"
   // Раз в 30 минут — погода не меняется поминутно, незачем дёргать сторонние сервисы чаще
   "loadWeather();setInterval(loadWeather,1800000);"
-  "function forgetWifi(){if(confirm(I18N[currentLang].forgetWifiConfirm)){"
-  "fetch('/wifi-forget',{method:'POST'})"
-  ".then(()=>alert(I18N[currentLang].forgetWifiDone+'" WIFI_PROVISION_AP_SSID "'))}}"
+  // Порядок важен (см. handleFactoryReset() в web_control.cpp): сначала локальный логаут из
+  // Spotify (ESP32 о нём вообще ничего не знает), потом уже запрос, который сбрасывает Arylic
+  // (fire-and-forget, свежий mDNS) и сам ESP32 (Wi-Fi credentials + перезагрузка в AP-режим)
+  "function factoryReset(){if(!confirm(I18N[currentLang].factoryResetConfirm))return;"
+  "spLogout();"
+  "fetch('/factory-reset',{method:'POST'})"
+  ".then(()=>alert(I18N[currentLang].forgetWifiDone+'" WIFI_PROVISION_AP_SSID "'))"
+  ".catch(()=>alert(I18N[currentLang].forgetWifiDone+'" WIFI_PROVISION_AP_SSID "'))}"
   // ---- Spotify: логин (PKCE через GitHub Pages, см. docs/spotify/), поиск, "Мои треки",
   // мини-плеер через Arylic как Spotify Connect-цель. Всё общение — напрямую из этого JS в
   // api.spotify.com/accounts.spotify.com, ESP32 тут только раздаёт статику, ничего не
@@ -2361,14 +2366,21 @@ static void handleSeek() {
   server.send(204);
 }
 
-// Сознательная смена сети без физического переезда (см. wifi_provisioning.h за тем, зачем
-// это нужно отдельно от автоматического ухода в настройку) — стирает сохранённые SSID/пароль
-// и перезагружается; следующий wifiSetupBegin() (main.cpp) не найдёт сохранённой сети и сам
-// поднимет AP-режим настройки
-static void handleWifiForget() {
+// Полный заводской сброс всей системы одной кнопкой (заменила прежнюю отдельную "Сменить
+// Wi-Fi" — та же идея, шире). Порядок важен: клиент (PAGE_HTML, factoryReset()) СНАЧАЛА
+// разлогинивает Spotify локально (spLogout(), чисто client-side, ESP32 о Spotify вообще ничего
+// не знает) и только потом шлёт этот запрос. Здесь — сперва отвечаем клиенту (чтобы alert() с
+// подтверждением не завис в ожидании), потом сбрасываем Arylic (см. arylicTriggerFactoryReset()
+// — свежий mDNS, не кэш/статический IP: система может физически переехать в другой дом/сеть, и
+// сам сброс fire-and-forget, ответа Arylic не ждём), и только в конце — себя (то же самое,
+// что раньше делала handleWifiForget(): стереть Wi-Fi credentials и перезагрузиться; следующий
+// wifiSetupBegin(), main.cpp, не найдёт сохранённой сети и сам поднимет AP-режим настройки)
+static void handleFactoryReset() {
+  server.send(200, "text/plain", "OK, сбрасываю Arylic и перезагружаюсь в режим настройки");
+  delay(50); // даём TCP-ответу уйти клиенту, прежде чем тратить время на Arylic/перезагрузку
+  arylicTriggerFactoryReset();
   wifiForgetCredentials();
-  server.send(200, "text/plain", "OK, перезагружаюсь в режим настройки");
-  delay(1000); // даём TCP-ответу уйти клиенту, прежде чем рвать сеть перезагрузкой
+  delay(1000); // тот же запас, что был у handleWifiForget() — перед тем как рвать сеть перезагрузкой
   ESP.restart();
 }
 
@@ -2397,7 +2409,7 @@ void webControlBegin() {
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
   server.on("/status", handleStatus);
-  server.on("/wifi-forget", HTTP_POST, handleWifiForget);
+  server.on("/factory-reset", HTTP_POST, handleFactoryReset);
   server.on("/arylic-status", handleArylicStatus);
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.on("/track", handleTrack);

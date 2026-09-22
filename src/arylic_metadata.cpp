@@ -220,6 +220,36 @@ bool arylicSeek(long posMs) {
   return sendArylicCommand(String("setPlayerCmd:seek:") + (posMs / 1000));
 }
 
+// Свежий mDNS-запрос напрямую (не через resolveArylicIp() — та кэширует и в первую очередь
+// смотрит на manualIp/статический фолбэк из config.h, ни то ни другое не годится, если система
+// физически переехала в другую сеть с прошлого опроса). Фолбэк на resolveArylicIp() — только
+// если живой mDNS-запрос прямо сейчас не ответил, лучше какой-то шанс достучаться, чем никакого
+void arylicTriggerFactoryReset() {
+  IPAddress ip = MDNS.queryHost(ARYLIC_MDNS_HOSTNAME, 2000);
+  if (ip == IPAddress((uint32_t)0)) {
+    Serial.println("[arylic] заводской сброс: свежий mDNS не ответил, беру резолвленный/статический IP");
+    ip = resolveArylicIp();
+  } else {
+    Serial.print("[arylic] заводской сброс: mDNS -> ");
+    Serial.println(ip);
+  }
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(3000);
+  if (!client.connect(ip, 443)) {
+    Serial.println("[arylic] заводской сброс: не удалось подключиться, пропускаю");
+    return;
+  }
+  // Пишем запрос и сразу рвём соединение, не читая ответ — сам Arylic отвечает не сразу
+  // (см. живой тест: ~9с до "OK"), а результат тут всё равно не проверяется и не показывается
+  client.print(String("GET /httpapi.asp?command=restoreToDefault HTTP/1.1\r\n") +
+               "Host: " + ip.toString() + "\r\n" +
+               "Connection: close\r\n\r\n");
+  client.flush();
+  client.stop();
+  Serial.println("[arylic] заводской сброс: запрос отправлен, ответа не ждём");
+}
+
 void arylicNotifyOnepausePressed() {
   MutexGuard g(stateMutex);
   // Оверрайд нужен ТОЛЬКО для AirPlay (mode "1") — там "status" подтверждённо не меняется на
