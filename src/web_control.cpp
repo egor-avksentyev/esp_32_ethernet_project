@@ -1358,6 +1358,7 @@ static const char PAGE_HTML[] PROGMEM =
   // applyTrackData() отдельно от pollTrack() — та же причина, что у applyStatusData() выше
   "function applyTrackData(j){"
   "trackLen=j.len;"
+  "mirrorTrackText=j.text||'';" // для бегущей строки названия трека на зеркале, см. drawTitleOverlay()
   "if(playPauseExpected===null||j.playing===playPauseExpected||Date.now()-playPauseExpectedSince>4000){"
   "trackPlayingNow=j.playing;updatePlayVisuals(j.playing);playPauseExpected=null}"
   // Та же защита, что у громкости чуть ниже (!volDragging) — раньше её тут не было вообще,
@@ -1506,28 +1507,98 @@ static const char PAGE_HTML[] PROGMEM =
   "iconAnimFrame++;"
   "drawIconOverlay()"
   "},ICON_FRAME_DELAY_MS);"
-  // Прогресс-бар Now Playing — та же логика, что и у иконки: не гонять кадр по UART на каждый
-  // тик (updateNowPlayingProgress() на Mega тикает частичным updateDisplayArea(), не подключён
-  // к зеркалу), а нарисовать его самим, локально, используя уже известные trackPos/trackLen
-  // (те же переменные, что уже опрашиваются для отдельного, собственного индикатора трека на
-  // этой же странице) — координаты и геометрия 1-в-1 как в renderNowPlayingProgressBar()
-  // (display_logic.cpp, Mega-репозиторий): рамка 4,40,120x4, заполнение 5,41,до 118,2
-  "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING
-  "function drawProgressOverlay(){"
-  "if(!megaFrameCtx||currentScreenId!==1||trackLen<=0)return;"
+  // Счётчик "1:32 / 3:50" + прогресс-бар Now Playing — та же логика, что и у иконки: не гонять
+  // кадр по UART на каждый тик (updateNowPlayingProgress() на Mega тикает частичным
+  // updateDisplayArea(), не подключён к зеркалу), а нарисовать самим, локально, используя уже
+  // известные trackPos/trackLen (те же переменные, что уже опрашиваются для отдельного,
+  // собственного индикатора трека на этой же странице). Счётчик и бар — общая область очистки
+  // (4,29,120x15), как и на Mega (renderNowPlayingStatusText()+renderNowPlayingProgressBar(),
+  // общий NOW_PLAYING_STATUS_CLEAR_Y/HEIGHT) — рисуются вместе, чтобы одно не стирало другое.
+  // Текст — обычным canvas-шрифтом (не битмап-копия шрифта u8g2, как у иконок/Mute) —
+  // не идеальное пиксельное совпадение, но: цифры/двоеточие/слэш не требуют точного совпадения
+  // глифов, чтобы быть читаемыми, а бит-копия ЛЮБОГО текста потребовала бы держать в прошивке
+  // весь алфавит шрифта u8g2 растрами — несоразмерно ради счётчика времени
+  "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING, 2=FRAME_MIRROR_SCREEN_MUTE
+  "function drawNowPlayingOverlay(){"
+  "if(!megaFrameCtx||currentScreenId!==1)return;"
+  "megaFrameCtx.clearRect(4,29,120,15);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "megaFrameCtx.font='8px monospace';"
+  "megaFrameCtx.textBaseline='alphabetic';"
+  "if(trackLen>0){"
   "let pos=trackPos+(Date.now()-trackFetchTime);"
   "if(pos<0)pos=0;if(pos>trackLen)pos=trackLen;"
+  "megaFrameCtx.fillText(fmtTime(pos)+' / '+fmtTime(trackLen),4,38);"
   "let innerWidth=Math.min(Math.round(120*pos/trackLen),118);"
-  "megaFrameCtx.clearRect(4,40,120,4);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
-  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
   "megaFrameCtx.fillRect(4,40,120,1);"
   "megaFrameCtx.fillRect(4,43,120,1);"
   "megaFrameCtx.fillRect(4,40,1,4);"
   "megaFrameCtx.fillRect(123,40,1,4);"
   "if(innerWidth>0)megaFrameCtx.fillRect(5,41,innerWidth,2)"
+  "}else{"
+  "megaFrameCtx.fillText('Playing',4,38)"
+  "}"
   "}"
   // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще
-  "setInterval(function(){if(currentScreenId===1)drawProgressOverlay()},200);"
+  "setInterval(function(){if(currentScreenId===1)drawNowPlayingOverlay()},200);"
+  // Бегущая строка названия трека — та же идея, что у прогресс-бара: updateNowPlayingTitleScroll()
+  // на Mega тикает частичным updateDisplayArea(), не подключён к зеркалу; название и так уже
+  // известно веб-странице (mirrorTrackText, из applyTrackData() — тот же /track, что и у
+  // собственного, отдельного заголовка трека на этой же странице). Геометрия — как в
+  // renderNowPlayingTitleClipped() (display_logic.cpp, Mega-репозиторий): окно показа 4,7,120x11,
+  // шаг NOW_PLAYING_TITLE_SCROLL_STEP_MS=120мс на 1px, разрыв между повторами 16px
+  "let mirrorTrackText='';"
+  "let titleScrollOffset=0,titleScrollLastText=null,titleScrollLastStep=0;"
+  "function drawTitleOverlay(){"
+  "if(!megaFrameCtx||currentScreenId!==1)return;"
+  "megaFrameCtx.clearRect(4,7,120,11);"
+  "let text=mirrorTrackText;"
+  "if(!text)return;"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "megaFrameCtx.font='8px monospace';"
+  "megaFrameCtx.textBaseline='alphabetic';"
+  "let textWidth=megaFrameCtx.measureText(text).width;"
+  "if(textWidth<=120){megaFrameCtx.fillText(text,4,16);return}"
+  "if(text!==titleScrollLastText){titleScrollLastText=text;titleScrollOffset=0;titleScrollLastStep=Date.now()}"
+  "let cycleWidth=textWidth+16;"
+  "let now=Date.now();"
+  "if(now-titleScrollLastStep>=120){titleScrollLastStep=now;titleScrollOffset=(titleScrollOffset+1)%cycleWidth}"
+  "megaFrameCtx.save();"
+  "megaFrameCtx.beginPath();"
+  "megaFrameCtx.rect(4,7,120,11);"
+  "megaFrameCtx.clip();"
+  "megaFrameCtx.fillText(text,4-titleScrollOffset,16);"
+  "if(titleScrollOffset>cycleWidth-120)megaFrameCtx.fillText(text,4-titleScrollOffset+cycleWidth,16);"
+  "megaFrameCtx.restore()"
+  "}"
+  "setInterval(function(){if(currentScreenId===1)drawTitleOverlay()},120);"
+  // Mute — целиком локальная анимация, та же идея, что у иконок пунктов меню: mute_animation.cpp
+  // на Mega шлёт только ПЕРВЫЙ кадр полностью (см. FRAME_MIRROR_SCREEN_MUTE в Mega-репозитории),
+  // дальше крутит анимацию частичными updateDisplayArea(), в зеркало не попадающими. Те же 18
+  // кадров 48x48, что и в animations/mute_animation.cpp, скопированы в MUTE_B64
+  "const MUTE_B64=[\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAMAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAGAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwBsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/2AMDBwP/3AMDgwMBzgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAIAcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"AAAAAAAAAAAAAAAAMAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAOAAAAAAAHAAAAAAAD\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAHAAAAOMADgAAAHMABwAAADsAA4AAAB8AAcAAAA4AAMAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMfBwAAcAMODgAAOAMHHAAAPAMDvAAAHAMB8AAADgMA4AAABwMAcAAAA4MAOAAAAcMAEAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwB8OMMMBwA8MMMMBwAccMMMBwAOYccMBwAHAccMBwADg4YOBwABxw4H/wAI7gwD/4AMbBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+OAMDBwP/HAMDgwMBjgMBw4MBxwMA4YMBw4MAYYMBwcMYMMMBwOMcMMMBwHMMMMMBwDsMMMMBwBsOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAcA4MAAAAOBwMAAAAHDgMAYAADngMAcAAB/AMAOAAA+AMAHAAAcAMADgD+MAMDBwP/AAMDgwMBgAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAOAAB8AAAHAADsAAADgAHMAAABwAOMAAAA4AcMAAAAYA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"wAAAAAAA4AAAAAAAcAAA4AAAMAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAA4AAAAAAB8AAAAAADsAAAAAAHMAAAAAAOMAAAAAAcMAAAAAA4MAAAAABwMAAAAADgMAYAAAHgMAcAAAPAMAOAAAOAMAHAAAcAMADgD/4AMDBwP/wAMDgwMBwAMBw4MBwAMA4YMBwAMAYYMBwAMYMMMBwAMcMMMBwAMMMMMBwAMMMMMBwAMOMMMBwAMMMMMBwAMcMMMBwAMYccMBwAMAccMBwAMA4YOBwAMBw4H/wAMDgwD/4AMDBwAAcAMADgAAOAMAHAAAPAMAPAAAHAMAcAAADgMAIAAABwMAAAAAA4MAAAAAAcMAAAAAAOMAAAAAAHMAAAAAADsAAAAAAB8AAAAAAA4AAAAAAAAAAAAAAAAAAA\"];"
+  "const MUTE_X=40,MUTE_Y=8,MUTE_FRAME_DELAY_MS=42;"
+  "let MUTE_FRAMES=MUTE_B64.map(b64ToBytes);"
+  "let muteAnimFrame=0;"
+  "function drawMuteOverlay(){"
+  "if(!megaFrameCtx||currentScreenId!==2)return;"
+  "let frame=MUTE_FRAMES[muteAnimFrame%MUTE_FRAMES.length];"
+  "let img=megaFrameCtx.createImageData(48,48);"
+  "for(let y=0;y<48;y++){"
+  "for(let x=0;x<48;x++){"
+  "let byteIndex=y*6+(x>>3);"
+  "let bit=7-(x&7);"
+  "let on=(frame[byteIndex]>>bit)&1;"
+  "let idx=(y*48+x)*4;"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=on?255:0"
+  "}}"
+  "megaFrameCtx.putImageData(img,MUTE_X,MUTE_Y)"
+  "}"
+  "setInterval(function(){"
+  "if(currentScreenId!==2)return;"
+  "muteAnimFrame++;"
+  "drawMuteOverlay()"
+  "},MUTE_FRAME_DELAY_MS);"
   "function applyFrameData(buf){"
   "if(!megaFrameCtx||buf.byteLength<1026)return;"
   "let bytes=new Uint8Array(buf);"
@@ -1547,7 +1618,8 @@ static const char PAGE_HTML[] PROGMEM =
   "currentIconId=bytes[1024];"
   "drawIconOverlay();"
   "currentScreenId=bytes[1025];"
-  "drawProgressOverlay();"
+  "if(currentScreenId===1){drawTitleOverlay();drawNowPlayingOverlay()}"
+  "else if(currentScreenId===2){drawMuteOverlay()}"
   "megaFrameCanvas.style.display='block'"
   "}"
   "let liveWs=null;"
