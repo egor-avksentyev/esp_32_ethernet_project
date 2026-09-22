@@ -393,7 +393,8 @@ static const char PAGE_HTML[] PROGMEM =
   // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
   // 30%), по центру
   "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:70%;"
-  "image-rendering:pixelated;background:rgba(128,128,128,.35);border-radius:8px;"
+  "image-rendering:pixelated;background-image:linear-gradient(135deg,#000,#3a3a3a);"
+  "border-radius:8px;"
   "margin:0 auto 10px'></canvas>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
