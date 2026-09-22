@@ -392,10 +392,16 @@ static const char PAGE_HTML[] PROGMEM =
   "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
   "<button onclick=cmd('right')>&rarr;</button></div>"
   "<div>"
-  "<button onmousedown=startHold('up') onmouseup=stopHold() onmouseleave=stopHold()"
-  " ontouchstart=startHold('up') ontouchend=stopHold()>&uarr;</button>"
-  "<button onmousedown=startHold('down') onmouseup=stopHold() onmouseleave=stopHold()"
-  " ontouchstart=startHold('down') ontouchend=stopHold()>&darr;</button>"
+  // Pointer Events (не отдельно onmousedown+ontouchstart) — на телефоне touchstart ЗАОДНО
+  // порождает синтетический mousedown (браузер эмулирует мышь поверх тача ради совместимости
+  // со старыми сайтами) — оба обработчика срабатывали на одно и то же физическое нажатие,
+  // давая два независимых вызова startHold()/stopHold() подряд вместо одного (перескок на 2
+  // пункта списка внутри Dimmer/Source/EQ/Info). Pointer Events объединяют мышь/тач/перо в
+  // одну модель без этого дублирования
+  "<button onpointerdown=startHold('up') onpointerup=stopHold() onpointerleave=stopHold()"
+  " onpointercancel=stopHold()>&uarr;</button>"
+  "<button onpointerdown=startHold('down') onpointerup=stopHold() onpointerleave=stopHold()"
+  " onpointercancel=stopHold()>&darr;</button>"
   "</div>"
   "<div><button onclick=cmd('mute') data-i18n=mute>Mute</button>"
   "<button onclick=cmd('set') data-i18n=source>Source</button>"
@@ -847,6 +853,10 @@ static const char PAGE_HTML[] PROGMEM =
   // соединение держится. onerror — если WS вообще не поднялся, хоть раз сработает как раньше
   "let holdWs=null;"
   "function startHold(a){"
+  // На случай ЛЮБОГО повторного вызова без промежуточного stopHold() (что угодно, не только
+  // синтетические mouse-события — на всякий случай, раз именно это и было причиной перескока)
+  // — закрываем прежнее соединение перед тем, как открыть новое, а не копим их
+  "if(holdWs)stopHold();"
   "try{"
   "holdWs=new WebSocket('ws://'+location.hostname+':81/');"
   "holdWs.onopen=function(){holdWs.send(a)};"
