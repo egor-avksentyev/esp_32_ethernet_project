@@ -387,6 +387,13 @@ static const char PAGE_HTML[] PROGMEM =
   "<button id=remoteToggle onclick=toggleCollapse('remoteCollapse')>"
   "<span data-i18n=remoteControl>Remote Control</span></button>"
   "<div id=remoteCollapse><div>"
+  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED,
+  // приходит бинарным WS-кадром поверх уже открытого liveWs (см. connectLiveWs()). Скрыт по
+  // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData()). Над кнопками
+  // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
+  // 30%), по центру
+  "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:70%;"
+  "image-rendering:pixelated;background:#000;border-radius:8px;margin:0 auto 10px'></canvas>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
   "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
@@ -405,11 +412,6 @@ static const char PAGE_HTML[] PROGMEM =
   // отдельным эндпоинтом — эта панель и так опрашивается каждые 1.5с. Пусто, пока Mega ни разу
   // не прислала своё состояние (megaKnown:false) — например сразу после включения ESP32
   "<div id=megaSensors style='margin-top:8px;font-size:.94em;color:#999;text-align:center'></div>"
-  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED,
-  // приходит бинарным WS-кадром поверх уже открытого liveWs (см. connectLiveWs()). Скрыт по
-  // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData())
-  "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:100%;"
-  "image-rendering:pixelated;background:#000;border-radius:8px;margin-top:8px'></canvas>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt>"
@@ -1469,9 +1471,10 @@ static const char PAGE_HTML[] PROGMEM =
   "let byteIndex=y*4+(x>>3);"
   "let bit=7-(x&7);"
   "let on=(frame[byteIndex]>>bit)&1;"
-  "let v=on?255:0;"
+  // Тёплый ламповый жёлто-янтарный вместо серого/белого (см. applyFrameData() ниже — тот же
+  // цвет, оба должны совпадать: это один "экран", просто рисуется в два прохода)
   "let idx=(y*32+x)*4;"
-  "img.data[idx]=v;img.data[idx+1]=v;img.data[idx+2]=v;img.data[idx+3]=255"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=255"
   "}}"
   "megaFrameCtx.putImageData(img,ox,oy)"
   "}"
@@ -1491,9 +1494,9 @@ static const char PAGE_HTML[] PROGMEM =
   "let tileCol=x>>3,colInTile=x&7,tileRow=y>>3;"
   "let byteIndex=tileRow*128+tileCol*8+colInTile;"
   "let on=(bytes[byteIndex]>>(y&7))&1;"
-  "let v=on?255:0;"
+  // Тёплый ламповый жёлто-янтарный (255,176,0) вместо серого/белого — по просьбе пользователя
   "let idx=(y*128+x)*4;"
-  "img.data[idx]=v;img.data[idx+1]=v;img.data[idx+2]=v;img.data[idx+3]=255"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=255"
   "}}"
   "megaFrameCtx.putImageData(img,0,0);"
   "currentIconId=bytes[1024];"
