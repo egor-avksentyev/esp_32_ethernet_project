@@ -2,7 +2,10 @@
 #include "config.h"
 #include "web_control.h"
 
-#define FRAME_MIRROR_PAYLOAD_LEN 1024
+// 1024 байта буфера + 1 байт ID иконки (см. FRAME_MIRROR_ICON_* в Mega-репозитории,
+// frame_mirror.h) — оба идут дальше клиенту одним куском, чексумма — отдельно, не входит
+// в то, что реально рассылается на веб-страницу
+#define FRAME_MIRROR_PAYLOAD_LEN 1025
 
 static HardwareSerial FrameMirrorSerial(1);
 
@@ -55,8 +58,9 @@ void frameMirrorPoll() {
           checksum ^= frameBuf[i];
         }
         if (checksum == b) {
-          // Совпало — кадр цел, рассылаем как есть. Не совпало — просто отбрасываем целиком
-          // (не показываем визуально "битый" кадр), следующий 0xAA 0x55 подхватит разбор заново
+          // Совпало — кадр цел (1024 байта буфера + 1 байт ID иконки), рассылаем как есть.
+          // Не совпало — просто отбрасываем целиком (не показываем визуально "битый" кадр),
+          // следующий 0xAA 0x55 подхватит разбор заново
           webControlBroadcastFrame(frameBuf, FRAME_MIRROR_PAYLOAD_LEN);
         }
         state = WAIT_SYNC1;
