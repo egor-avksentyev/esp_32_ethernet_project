@@ -1811,7 +1811,20 @@ static const char PAGE_HTML[] PROGMEM =
   "spDeviceId=null;spLastPlayback=null;"
   "if(spPollTimer){clearInterval(spPollTimer);spPollTimer=null}"
   "document.getElementById('spPlayerBar').style.display='none';"
-  "renderSpotifyAuth()}"
+  "renderSpotifyAuth();"
+  // Только localStorage чистит НАШИ токены — сам аккаунт в браузере остаётся залогинен
+  // (cookie-сессия на accounts.spotify.com), следующий вход мог бы молча переавторизоваться
+  // тем же аккаунтом без запроса логина/пароля. Скрытый iframe на официальный logout-эндпоинт
+  // рвёт именно эту cookie-сессию — тот же приём, что используют сторонние сайты для "выйти из
+  // аккаунта провайдера", без доступа к самой странице Spotify (кросс-домен, только сам запрос)
+  "try{"
+  "let f=document.createElement('iframe');"
+  "f.style.display='none';"
+  "f.src='https://accounts.spotify.com/logout';"
+  "document.body.appendChild(f);"
+  "setTimeout(function(){try{f.remove()}catch(e){}},2000)"
+  "}catch(e){}"
+  "}"
   "function spLogin(){location.href=SP_LOGIN_URL+'?return='+encodeURIComponent(location.origin+location.pathname)}"
   // Возврат из callback.html (см. docs/spotify/callback.html) — токен во фрагменте адреса,
   // не в query, поэтому сервер ESP32 его никогда не видит (см. пояснение там же). Once —
