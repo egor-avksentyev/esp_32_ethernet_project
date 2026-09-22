@@ -1485,8 +1485,31 @@ static const char PAGE_HTML[] PROGMEM =
   "iconAnimFrame++;"
   "drawIconOverlay()"
   "},ICON_FRAME_DELAY_MS);"
+  // Прогресс-бар Now Playing — та же логика, что и у иконки: не гонять кадр по UART на каждый
+  // тик (updateNowPlayingProgress() на Mega тикает частичным updateDisplayArea(), не подключён
+  // к зеркалу), а нарисовать его самим, локально, используя уже известные trackPos/trackLen
+  // (те же переменные, что уже опрашиваются для отдельного, собственного индикатора трека на
+  // этой же странице) — координаты и геометрия 1-в-1 как в renderNowPlayingProgressBar()
+  // (display_logic.cpp, Mega-репозиторий): рамка 4,40,120x4, заполнение 5,41,до 118,2
+  "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING
+  "function drawProgressOverlay(){"
+  "if(!megaFrameCtx||currentScreenId!==1||trackLen<=0)return;"
+  "let pos=trackPos+(Date.now()-trackFetchTime);"
+  "if(pos<0)pos=0;if(pos>trackLen)pos=trackLen;"
+  "let innerWidth=Math.min(Math.round(120*pos/trackLen),118);"
+  "megaFrameCtx.fillStyle='#000';"
+  "megaFrameCtx.fillRect(4,40,120,4);"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "megaFrameCtx.fillRect(4,40,120,1);"
+  "megaFrameCtx.fillRect(4,43,120,1);"
+  "megaFrameCtx.fillRect(4,40,1,4);"
+  "megaFrameCtx.fillRect(123,40,1,4);"
+  "if(innerWidth>0)megaFrameCtx.fillRect(5,41,innerWidth,2)"
+  "}"
+  // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще
+  "setInterval(function(){if(currentScreenId===1)drawProgressOverlay()},200);"
   "function applyFrameData(buf){"
-  "if(!megaFrameCtx||buf.byteLength<1025)return;"
+  "if(!megaFrameCtx||buf.byteLength<1026)return;"
   "let bytes=new Uint8Array(buf);"
   "let img=megaFrameCtx.createImageData(128,64);"
   "for(let y=0;y<64;y++){"
@@ -1501,6 +1524,8 @@ static const char PAGE_HTML[] PROGMEM =
   "megaFrameCtx.putImageData(img,0,0);"
   "currentIconId=bytes[1024];"
   "drawIconOverlay();"
+  "currentScreenId=bytes[1025];"
+  "drawProgressOverlay();"
   "megaFrameCanvas.style.display='block'"
   "}"
   "let liveWs=null;"
