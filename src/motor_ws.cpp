@@ -23,11 +23,20 @@ static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, siz
       if (msg == "up") {
         motorHoldLetter = 'U';
         motorHoldClientNum = num;
-        lastMotorHoldSend = 0; // 0, не millis() — форсирует немедленную первую отправку в motorWsPoll()
+        // millis(), не 0 — startHold() в PAGE_HTML уже шлёт одну команду немедленно через
+        // cmd() ДО того, как это WS-соединение вообще успевает открыться; если тут тоже
+        // форсировать немедленную отправку на следующем motorWsPoll(), короткое одиночное
+        // нажатие (внутри Dimmer/Source/EQ/Info, где Up/Down — это ОДИН шаг списка, а не
+        // непрерывное вращение мотора) успевало дать целых 2 шага вместо одного: один от
+        // cmd(), второй — от этого форсированного немедленного повтора. millis() заставляет
+        // подождать полный MOTOR_WS_REPEAT_MS перед первым РЕАЛЬНЫМ повтором — короткий тап
+        // (быстрее MOTOR_WS_REPEAT_MS) успевает отпуститься (stopHold()) раньше, чем повтор
+        // вообще случится, и даёт ровно один шаг
+        lastMotorHoldSend = millis();
       } else if (msg == "down") {
         motorHoldLetter = 'D';
         motorHoldClientNum = num;
-        lastMotorHoldSend = 0;
+        lastMotorHoldSend = millis();
       } else if (msg == "stop" && motorHoldClientNum == num) {
         motorHoldLetter = '\0';
       }
