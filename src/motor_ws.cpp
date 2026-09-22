@@ -9,6 +9,8 @@ static WebSocketsServer motorWsServer(MOTOR_WS_PORT);
 static char motorHoldLetter = '\0';
 static uint8_t motorHoldClientNum = 0;
 static unsigned long lastMotorHoldSend = 0;
+// true — ещё ни разу не повторяли в ЭТОМ сеансе удержания (см. MOTOR_WS_FIRST_REPEAT_DELAY_MS)
+static bool firstRepeatPending = false;
 
 static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
@@ -23,20 +25,13 @@ static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, siz
       if (msg == "up") {
         motorHoldLetter = 'U';
         motorHoldClientNum = num;
-        // millis(), не 0 — startHold() в PAGE_HTML уже шлёт одну команду немедленно через
-        // cmd() ДО того, как это WS-соединение вообще успевает открыться; если тут тоже
-        // форсировать немедленную отправку на следующем motorWsPoll(), короткое одиночное
-        // нажатие (внутри Dimmer/Source/EQ/Info, где Up/Down — это ОДИН шаг списка, а не
-        // непрерывное вращение мотора) успевало дать целых 2 шага вместо одного: один от
-        // cmd(), второй — от этого форсированного немедленного повтора. millis() заставляет
-        // подождать полный MOTOR_WS_REPEAT_MS перед первым РЕАЛЬНЫМ повтором — короткий тап
-        // (быстрее MOTOR_WS_REPEAT_MS) успевает отпуститься (stopHold()) раньше, чем повтор
-        // вообще случится, и даёт ровно один шаг
         lastMotorHoldSend = millis();
+        firstRepeatPending = true; // см. MOTOR_WS_FIRST_REPEAT_DELAY_MS (config.h) за причиной
       } else if (msg == "down") {
         motorHoldLetter = 'D';
         motorHoldClientNum = num;
         lastMotorHoldSend = millis();
+        firstRepeatPending = true;
       } else if (msg == "stop" && motorHoldClientNum == num) {
         motorHoldLetter = '\0';
       }
@@ -65,9 +60,15 @@ void motorWsPoll() {
   if (motorHoldLetter == '\0') {
     return;
   }
-  if (millis() - lastMotorHoldSend < MOTOR_WS_REPEAT_MS) {
+  // Первый повтор в сеансе ждёт дольше (MOTOR_WS_FIRST_REPEAT_DELAY_MS) — отличает короткий тап
+  // (уже успевший отпуститься, motorHoldLetter к этому моменту уже '\0') от настоящего
+  // удержания; все следующие повторы — уже с обычным, коротким MOTOR_WS_REPEAT_MS для
+  // плавного непрерывного вращения мотора
+  unsigned long threshold = firstRepeatPending ? MOTOR_WS_FIRST_REPEAT_DELAY_MS : MOTOR_WS_REPEAT_MS;
+  if (millis() - lastMotorHoldSend < threshold) {
     return;
   }
   lastMotorHoldSend = millis();
+  firstRepeatPending = false;
   megaLinkSendCommand(motorHoldLetter);
 }
