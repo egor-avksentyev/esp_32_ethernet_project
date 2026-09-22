@@ -405,6 +405,11 @@ static const char PAGE_HTML[] PROGMEM =
   // отдельным эндпоинтом — эта панель и так опрашивается каждые 1.5с. Пусто, пока Mega ни разу
   // не прислала своё состояние (megaKnown:false) — например сразу после включения ESP32
   "<div id=megaSensors style='margin-top:8px;font-size:.94em;color:#999;text-align:center'></div>"
+  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED,
+  // приходит бинарным WS-кадром поверх уже открытого liveWs (см. connectLiveWs()). Скрыт по
+  // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData())
+  "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:100%;"
+  "image-rendering:pixelated;background:#000;border-radius:8px;margin-top:8px'></canvas>"
   "</div></div>"
   "<div id=trackWrap style='margin-top:14px;display:none'>"
   "<img id=trackArt>"
@@ -1414,14 +1419,38 @@ static const char PAGE_HTML[] PROGMEM =
   // недоступен/оборвался — HTTP-фолбэк сам продолжает работать как раньше, страница не ломается
   "let lastLiveMsgTime=0;"
   "function liveDataFresh(){return Date.now()-lastLiveMsgTime<3000}"
+  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED.
+  // Раскодирует тайловый формат u8g2 (128x64/8=1024 байта): для пикселя (x,y) —
+  // tileCol=x>>3, colInTile=x&7, tileRow=y>>3, byteIndex=tileRow*128+tileCol*8+colInTile,
+  // бит=y&7 (LSB=верх). См. frame_mirror.h в обоих репозиториях за источником формата
+  "let megaFrameCanvas=document.getElementById('megaFramePixel');"
+  "let megaFrameCtx=megaFrameCanvas?megaFrameCanvas.getContext('2d'):null;"
+  "function applyFrameData(buf){"
+  "if(!megaFrameCtx||buf.byteLength<1024)return;"
+  "let bytes=new Uint8Array(buf);"
+  "let img=megaFrameCtx.createImageData(128,64);"
+  "for(let y=0;y<64;y++){"
+  "for(let x=0;x<128;x++){"
+  "let tileCol=x>>3,colInTile=x&7,tileRow=y>>3;"
+  "let byteIndex=tileRow*128+tileCol*8+colInTile;"
+  "let on=(bytes[byteIndex]>>(y&7))&1;"
+  "let v=on?255:0;"
+  "let idx=(y*128+x)*4;"
+  "img.data[idx]=v;img.data[idx+1]=v;img.data[idx+2]=v;img.data[idx+3]=255"
+  "}}"
+  "megaFrameCtx.putImageData(img,0,0);"
+  "megaFrameCanvas.style.display='block'"
+  "}"
   "let liveWs=null;"
   "let liveWsRetryDelay=1000;"
   "function connectLiveWs(){"
   "try{"
   "liveWs=new WebSocket('ws://'+location.hostname+':82/');"
+  "liveWs.binaryType='arraybuffer';"
   "liveWs.onopen=function(){liveWsRetryDelay=1000};"
   "liveWs.onmessage=function(ev){"
   "lastLiveMsgTime=Date.now();"
+  "if(ev.data instanceof ArrayBuffer){applyFrameData(ev.data);return}"
   "let msg;"
   "try{msg=JSON.parse(ev.data)}catch(e){return}"
   "if(msg.type==='status')applyStatusData(msg.data);"
@@ -2374,6 +2403,16 @@ static void liveWsBroadcastPoll() {
   liveWsServer.broadcastTXT("{\"type\":\"status\",\"data\":" + buildStatusJson() + "}");
   liveWsServer.broadcastTXT("{\"type\":\"track\",\"data\":" + buildTrackJson() + "}");
   liveWsServer.broadcastTXT("{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}");
+}
+
+// Эксперимент (ветка experiment/frame-mirror-serial3, не main) — сырой бинарный WS-фрейм,
+// не JSON: клиент отличает его от текстовых push-сообщений выше по типу (ArrayBuffer vs
+// строка, см. connectLiveWs() в PAGE_HTML), поэтому обёртка не нужна вообще
+void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
+  if (liveWsServer.connectedClients() == 0) {
+    return;
+  }
+  liveWsServer.broadcastBIN(buf, len);
 }
 
 void webControlBegin() {

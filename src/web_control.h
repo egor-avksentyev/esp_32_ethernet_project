@@ -24,3 +24,10 @@ void webControlPoll(); // вызывать из loop() каждую итерац
 // UART (см. mega_link.cpp). off — новое состояние (true = выключено); вызов с уже текущим
 // значением ничего не делает (см. определение в web_control.cpp)
 void applyWebPowerState(bool off);
+
+// Рассылает сырой бинарный кадр (128x64/8 = 1024 байта, tile-формат u8g2) всем клиентам,
+// подключённым к тому же live-WebSocket (LIVE_WS_PORT, config.h), что уже используется для
+// push статуса/трека — см. frame_mirror.h/.cpp (эксперимент, ветка experiment/
+// frame-mirror-serial3, не main) за источником данных. Ничего не делает, если ни один клиент
+// не подключён (см. определение в web_control.cpp)
+void webControlBroadcastFrame(const uint8_t* buf, size_t len);

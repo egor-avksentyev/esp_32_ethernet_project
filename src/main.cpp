@@ -7,6 +7,7 @@
 #include "web_control.h"
 #include "arylic_metadata.h"
 #include "motor_ws.h"
+#include "frame_mirror.h"
 
 // true, пока идёт настройка Wi-Fi (своя точка доступа, см. wifi_provisioning.h) — обычная
 // работа (веб-управление/метадата) в этом режиме не имеет смысла, реальной сети ещё нет
@@ -24,6 +25,7 @@ void setup() {
     webControlBegin();
     arylicMetadataBegin();
     motorWsBegin();
+    frameMirrorBegin();
   } else {
     // Сохранённой сети нет или она не отвечает (например устройство перенесли в другой дом) —
     // вместо обычной работы поднимаем AP-режим настройки, см. wifi_provisioning.h
@@ -41,4 +43,5 @@ void loop() {
   webControlPoll();
   megaLinkPoll();
   motorWsPoll();
+  frameMirrorPoll();
 }
