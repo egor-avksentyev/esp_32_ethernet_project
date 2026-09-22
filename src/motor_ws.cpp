@@ -9,8 +9,6 @@ static WebSocketsServer motorWsServer(MOTOR_WS_PORT);
 static char motorHoldLetter = '\0';
 static uint8_t motorHoldClientNum = 0;
 static unsigned long lastMotorHoldSend = 0;
-// true — ещё ни разу не повторяли в ЭТОМ сеансе удержания (см. MOTOR_WS_FIRST_REPEAT_DELAY_MS)
-static bool firstRepeatPending = false;
 
 static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
@@ -22,16 +20,23 @@ static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, siz
       for (size_t i = 0; i < length; i++) {
         msg += (char)payload[i];
       }
-      if (msg == "up") {
-        motorHoldLetter = 'U';
+      // "up"/"down" — ЕДИНСТВЕННЫЙ источник команды на это нажатие (раньше startHold() в
+      // PAGE_HTML ДОПОЛНИТЕЛЬНО слала одну команду сразу через cmd(), а этот обработчик потом
+      // ещё и планировал первый повтор — при коротком нажатии внутри Dimmer/Source/EQ/Info
+      // (где Up/Down это ОДИН шаг списка, а не непрерывное вращение мотора) обе стороны почти
+      // всегда успевали сработать до отпускания, вместо одного шага получалось два. Ни
+      // подстройка задержки первого повтора (MOTOR_WS_FIRST_REPEAT_DELAY_MS — было 80мс, потом
+      // 300мс), ни что-либо ещё в этом духе не помогало стабильно, потому что сама схема с
+      // ДВУМЯ независимыми источниками команды в принципе гоняется наперегонки. Теперь
+      // единственный путь — отправляем СРАЗУ здесь (это и есть "один шаг" на одиночное
+      // нажатие), а motorWsPoll() ниже только повторяет, если соединение всё ещё держится
+      // дольше MOTOR_WS_REPEAT_MS — для непрерывного вращения мотора при настоящем удержании
+      if (msg == "up" || msg == "down") {
+        char letter = (msg == "up") ? 'U' : 'D';
+        motorHoldLetter = letter;
         motorHoldClientNum = num;
+        megaLinkSendCommand(letter);
         lastMotorHoldSend = millis();
-        firstRepeatPending = true; // см. MOTOR_WS_FIRST_REPEAT_DELAY_MS (config.h) за причиной
-      } else if (msg == "down") {
-        motorHoldLetter = 'D';
-        motorHoldClientNum = num;
-        lastMotorHoldSend = millis();
-        firstRepeatPending = true;
       } else if (msg == "stop" && motorHoldClientNum == num) {
         motorHoldLetter = '\0';
       }
@@ -60,15 +65,11 @@ void motorWsPoll() {
   if (motorHoldLetter == '\0') {
     return;
   }
-  // Первый повтор в сеансе ждёт дольше (MOTOR_WS_FIRST_REPEAT_DELAY_MS) — отличает короткий тап
-  // (уже успевший отпуститься, motorHoldLetter к этому моменту уже '\0') от настоящего
-  // удержания; все следующие повторы — уже с обычным, коротким MOTOR_WS_REPEAT_MS для
-  // плавного непрерывного вращения мотора
-  unsigned long threshold = firstRepeatPending ? MOTOR_WS_FIRST_REPEAT_DELAY_MS : MOTOR_WS_REPEAT_MS;
-  if (millis() - lastMotorHoldSend < threshold) {
+  // Первая команда уже отправлена в handleMotorWsEvent() — здесь только повторы, пока
+  // соединение всё ещё держится (настоящее удержание, не одиночный тап)
+  if (millis() - lastMotorHoldSend < MOTOR_WS_REPEAT_MS) {
     return;
   }
   lastMotorHoldSend = millis();
-  firstRepeatPending = false;
   megaLinkSendCommand(motorHoldLetter);
 }
