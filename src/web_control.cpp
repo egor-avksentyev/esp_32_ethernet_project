@@ -6,6 +6,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WebSocketsServer.h>
+#include <string.h>
 
 static WebServer server(WEB_SERVER_PORT);
 
@@ -15,9 +16,11 @@ static WebServer server(WEB_SERVER_PORT);
 // рассылка широковещательная, лишнего кода под общий случай не потребовалось
 static WebSocketsServer liveWsServer(LIVE_WS_PORT);
 
-// Пустой обработчик — этот канал только для рассылки СЕРВЕРОМ, входящие сообщения от клиента
-// не ожидаются и ни на что не влияют (в отличие от motor_ws.h, где клиент шлёт "up"/"stop")
-static void handleLiveWsEvent(uint8_t, WStype_t, uint8_t*, size_t) {}
+// Кроме рассылки СЕРВЕРОМ (push статуса/трека), этот же канал принимает "cmd:<action>" от
+// клиента — одиночные кнопки (left/right/enter/mute/power/set), см. executeWebAction() и
+// cmd() в PAGE_HTML. Тело — ниже, после executeWebAction() (иначе пришлось бы либо объявлять
+// её заранее, либо переносить весь этот файл целиком — так проще)
+static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
 
 // Последняя команда, отправленная на Mega. До 2026-09-21 было единственное, что ESP32 вообще
 // "знал" о состоянии системы (Mega ничего не отправляла назад) — теперь webPoweredOff ниже
@@ -793,7 +796,16 @@ static const char PAGE_HTML[] PROGMEM =
   "5CP3a6s3yP69t/qHKMvXI6y5SKLR7Gv/NchTRxkRIW9p9GX/1pVpyu//Wuo8+lwPkXe91rfN3s5db7Uk+XqVnBXSyzGtWS+SPcf5jNJ6joV6s5LXRpirsni916f06VhXP9freq2378pf8z7U9/R6zGs7v2u57vi/WgPjwYMHDx48ePDgwYMHDx7+A/8PE5Jv24XdsU4A"
   "AAAASUVORK5CYII='></div>"
   "<script>"
-  "function cmd(a){fetch('/cmd?action='+a)}"
+  // Шлём через уже открытый liveWs (LIVE_WS_PORT, см. connectLiveWs() ниже), если он сейчас
+  // подключён — соединение и так постоянно держится открытым под push статуса/трека, досылка
+  // одиночной команды по нему не стоит нового TCP-хендшейка (в отличие от /cmd — WebServer.h
+  // всегда шлёт Connection: close, см. подробное объяснение в motor_ws.h/config.h). Обычный
+  // fetch('/cmd') остаётся фолбэком, если liveWs ещё не подключился/оборвался — та же логика
+  // подстраховки, что и у push статуса/трека (liveDataFresh())
+  "function cmd(a){"
+  "if(liveWs&&liveWs.readyState===WebSocket.OPEN){liveWs.send('cmd:'+a)}"
+  "else{fetch('/cmd?action='+a)}"
+  "}"
   // Mega физически довозит Bass/High/Volume к нулю и держит 3с экран "POWER OFF" ПЕРЕД тем,
   // как реально обесточиться (см. CLAUDE.md/on_off_logic.cpp в репозитории Mega,
   // seekBassHighVolumeToZeroBlocking()+powerOffDevices()) — всё это время цикл на Mega
@@ -2099,24 +2111,54 @@ static void handleRoot() {
   server.send_P(200, "text/html", PAGE_HTML);
 }
 
-static void handleCmd() {
-  if (server.hasArg("action")) {
-    String action = server.arg("action");
-    for (uint8_t i = 0; i < WEB_ACTIONS_COUNT; i++) {
-      if (action == WEB_ACTIONS[i].name) {
-        megaLinkSendCommand(WEB_ACTIONS[i].letter);
-        lastActionSent = WEB_ACTIONS[i].letter;
-        if (action == "power") {
-          // Оптимистично, сразу по клику — настоящее подтверждение от Mega (POWER: по UART,
-          // см. applyWebPowerState()) придёт чуть позже и совпадёт с этим же значением
-          // (applyWebPowerState() не делает ничего повторно, если оно совпадает)
-          applyWebPowerState(!webPoweredOff);
-        }
-        break;
+// Вынесена из handleCmd() отдельно — тем же телом пользуется и HTTP-обработчик (оставлен как
+// есть, простой и надёжный фолбэк на случай, если liveWs не подключён — см. cmd() в PAGE_HTML),
+// и приём "cmd:<action>" по уже открытому liveWs (handleLiveWsEvent() ниже) — одиночные кнопки
+// (left/right/enter/mute/power/set) отправляются через уже установленное соединение, без нового
+// TCP-хендшейка на каждое нажатие (WebServer.h всегда шлёт Connection: close, см. подробное
+// объяснение в motor_ws.h/config.h — тот же класс проблемы, только раньше не был замечен на
+// одиночных нажатиях, они реже происходят подряд, чем удержание Up/Down)
+static void executeWebAction(const String& action) {
+  for (uint8_t i = 0; i < WEB_ACTIONS_COUNT; i++) {
+    if (action == WEB_ACTIONS[i].name) {
+      megaLinkSendCommand(WEB_ACTIONS[i].letter);
+      lastActionSent = WEB_ACTIONS[i].letter;
+      if (action == "power") {
+        // Оптимистично, сразу по клику — настоящее подтверждение от Mega (POWER: по UART,
+        // см. applyWebPowerState()) придёт чуть позже и совпадёт с этим же значением
+        // (applyWebPowerState() не делает ничего повторно, если оно совпадает)
+        applyWebPowerState(!webPoweredOff);
       }
+      return;
     }
   }
+}
+
+static void handleCmd() {
+  if (server.hasArg("action")) {
+    executeWebAction(server.arg("action"));
+  }
   server.send(204);
+}
+
+static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (type != WStype_TEXT) {
+    return;
+  }
+  // "cmd:" — префикс, отличающий одиночную команду кнопки от прочего (сейчас это единственное,
+  // что клиент вообще шлёт на этот канал, но префикс на будущее — не гадать по одному только
+  // содержимому, если сюда добавится что-то ещё)
+  const char* prefix = "cmd:";
+  size_t prefixLen = 4;
+  if (length <= prefixLen || memcmp(payload, prefix, prefixLen) != 0) {
+    return;
+  }
+  String action;
+  action.reserve(length - prefixLen);
+  for (size_t i = prefixLen; i < length; i++) {
+    action += (char)payload[i];
+  }
+  executeWebAction(action);
 }
 
 // JSON, не готовая строка на русском — текст ("Wi-Fi OK"/"отключён"/"последняя команда")
