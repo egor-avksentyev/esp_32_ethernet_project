@@ -1519,6 +1519,23 @@ static const char PAGE_HTML[] PROGMEM =
   // глифов, чтобы быть читаемыми, а бит-копия ЛЮБОГО текста потребовала бы держать в прошивке
   // весь алфавит шрифта u8g2 растрами — несоразмерно ради счётчика времени
   "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING, 2=FRAME_MIRROR_SCREEN_MUTE
+  // canvas fillText() всегда сглаживает края шрифта (частичная альфа/промежуточные оттенки) —
+  // рядом с остальным зеркалом (только полностью включено/выключено, без полутонов) текст
+  // выглядел размытым и бледнее (частичная альфа = менее насыщенный янтарный). Бинаризация —
+  // дорисовали текст как обычно, затем по каждому пикселю региона: альфа выше порога -> сплошной
+  // непрозрачный янтарный, иначе — полностью прозрачный. Ровно тот же стиль, что и у растровых
+  // (не текстовых) частей зеркала
+  "function binarizeRegion(x,y,w,h){"
+  "let img=megaFrameCtx.getImageData(x,y,w,h);"
+  "for(let i=0;i<img.data.length;i+=4){"
+  "if(img.data[i+3]>=64){"
+  "img.data[i]=255;img.data[i+1]=176;img.data[i+2]=0;img.data[i+3]=255"
+  "}else{"
+  "img.data[i]=0;img.data[i+1]=0;img.data[i+2]=0;img.data[i+3]=0"
+  "}"
+  "}"
+  "megaFrameCtx.putImageData(img,x,y)"
+  "}"
   "function drawNowPlayingOverlay(){"
   "if(!megaFrameCtx||currentScreenId!==1)return;"
   "megaFrameCtx.clearRect(4,29,120,15);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
@@ -1538,6 +1555,7 @@ static const char PAGE_HTML[] PROGMEM =
   "}else{"
   "megaFrameCtx.fillText('Playing',4,38)"
   "}"
+  "binarizeRegion(4,29,120,15)"
   "}"
   // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще
   "setInterval(function(){if(currentScreenId===1)drawNowPlayingOverlay()},200);"
@@ -1558,7 +1576,7 @@ static const char PAGE_HTML[] PROGMEM =
   "megaFrameCtx.font='8px monospace';"
   "megaFrameCtx.textBaseline='alphabetic';"
   "let textWidth=megaFrameCtx.measureText(text).width;"
-  "if(textWidth<=120){megaFrameCtx.fillText(text,4,16);return}"
+  "if(textWidth<=120){megaFrameCtx.fillText(text,4,16);binarizeRegion(4,7,120,11);return}"
   "if(text!==titleScrollLastText){titleScrollLastText=text;titleScrollOffset=0;titleScrollLastStep=Date.now()}"
   "let cycleWidth=textWidth+16;"
   "let now=Date.now();"
@@ -1569,7 +1587,8 @@ static const char PAGE_HTML[] PROGMEM =
   "megaFrameCtx.clip();"
   "megaFrameCtx.fillText(text,4-titleScrollOffset,16);"
   "if(titleScrollOffset>cycleWidth-120)megaFrameCtx.fillText(text,4-titleScrollOffset+cycleWidth,16);"
-  "megaFrameCtx.restore()"
+  "megaFrameCtx.restore();"
+  "binarizeRegion(4,7,120,11)" // см. комментарий у binarizeRegion() выше — та же правка чёткости
   "}"
   "setInterval(function(){if(currentScreenId===1)drawTitleOverlay()},120);"
   // Mute — целиком локальная анимация, та же идея, что у иконок пунктов меню: mute_animation.cpp
@@ -1599,9 +1618,20 @@ static const char PAGE_HTML[] PROGMEM =
   "muteAnimFrame++;"
   "drawMuteOverlay()"
   "},MUTE_FRAME_DELAY_MS);"
-  "function applyFrameData(buf){"
-  "if(!megaFrameCtx||buf.byteLength<1026)return;"
-  "let bytes=new Uint8Array(buf);"
+  // Анимация ВЫХОДА из Mute (playUnmuteAnimation() на Mega) не шлёт ни одного полного кадра
+  // вообще (только updateDisplayArea()) — раньше это означало, что зеркало просто застревало
+  // на последнем кадре Mute, пока не придёт следующий настоящий полный кадр (например
+  // drawMenu() сразу после). Тот же 19-кадровый набор скопирован в UNMUTE_B64 и проигрывается
+  // ОДИН раз (не зациклен, как Mute), как только приходит первый кадр с currentScreenId!==2
+  // сразу ПОСЛЕ того, как был===2 — визуально "поверх" уже актуального (настоящего) кадра, но
+  // в той же позиции (MUTE_X/Y), что и у Mute. lastFrameBytes кэширует последний реально
+  // принятый кадр, чтобы по окончании анимации перерисовать то, что там ДОЛЖНО быть на самом
+  // деле (иначе последний кадр unmute-анимации остался бы висеть поверх настоящего содержимого)
+  "const UNMUTE_B64=[\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwGAAABwAwHgAADgAwDwAP/AAwBwA/+AAwAYA4MAAwAcAwMAAxwMAwMAAx4MAwMAAw8GAwMAAwMGAwMAAwMGAwMAAwMGAwMAAwOGAwMAAwMGAwMAAwMGAwMAAwcGAwMAAx4OAwMAAxgMA4cAAwAcAf+AAwA4AP/AAwB4AADgAwDwAABwAwHAAAA4AwGAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwBgAAAcAwBwAAA4AwA4AABwAwAcAADgAwAcAP/AAwAOA/+AAwAGA4MAAwAGAwMAAxwHAwMAAx4DAwMAAw8DAwMAAwMDAwMAAwMDAwMAAwMDgwMAAwODgwMAAwMDgwMAAwMDAwMAAwcDAwMAAx4DAwMAAxgHA4cAAwAHAf+AAwAOAP/AAwAOAADgAwAcAABwAwA8AAA4AwA4AAAcAwBwAAAOAwBgAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAYAAADgwAcAAAHAwAcAAAOAwAOAAAcAwAOAAA4AwAHAABwAwAHAADgAwADAP/AAwADA/+AAwADg4MAAwABgwMAAxwBgwMAAx4BgwMAAw8BgwMAAwMBwwMAAwMBwwMAAwMBwwMAAwOBwwMAAwMBwwMAAwMBwwMAAwcBgwMAAx4BgwMAAxgBg4cAAwADgf+AAwADgP/AAwADgADgAwAHAABwAwAHAAA4AwAPAAAcAwAOAAAOAwAeAAAHAwAcAAADgwAcAAABwwAQAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAwAAAHAwA4AAAOAwAYAAAcAwAcAAA4AwAOAABwAwAOAADgAwAGAP/AAwAHA/+AAwADA4MAAwADAwMAAxwDgwMAAx4DgwMAAw8DgwMAAwMBgwMAAwMBgwMAAwMBgwMAAwOBgwMAAwMBgwMAAwMDgwMAAwcDgwMAAx4DgwMAAxgDg4cAAwADAf+AAwAHAP/AAwAHAADgAwAGAABwAwAOAAA4AwAeAAAcAwAcAAAOAwA4AAAHAwA4AAADgwAwAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwDAAAAcAwDgAAA4AwBwAABwAwBwAADgAwA4AP/AAwAYA/+AAwAMA4MAAwAMAwMAAxwGAwMAAx4GAwMAAw8GAwMAAwMGAwMAAwMGAwMAAwMHAwMAAwOHAwMAAwMHAwMAAwMGAwMAAwcGAwMAAx4GAwMAAxgOA4cAAwAOAf+AAwAcAP/AAwAcAADgAwA4AABwAwBwAAA4AwDwAAAcAwDgAAAOAwCAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwMAAADgAwOAAP/AAwHAA/+AAwDgA4MAAwBgAwMAAxwwAwMAAx4wAwMAAw8YAwMAAwMYAwMAAwMYAwMAAwMYAwMAAwOYAwMAAwMYAwMAAwMYAwMAAwcYAwMAAx44AwMAAxgwA4cAAwBwAf+AAwDgAP/AAwHAAADgAwOAAABwAwMAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwwAA/+AAwcAA4MAAwMAAwMAAx2AAwMAAx7AAwMAAw/AAwMAAwNAAwMAAwNAAwMAAwNgAwMAAwPgAwMAAwNgAwMAAwNAAwMAAwfAAwMAAx7AAwMAAxmAA4cAAwOAAf+AAwYAAP/AAwQAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwAAA/+AAwAAA4MAAxwAAwMAAx4AAwMAAx4AAwMAAw8AAwMAAwMAAwMAAwMAAwMAAwMAAwMAAwOAAwMAAwMAAwMAAwMAAwMAAwcAAwMAAx4AAwMAAx4AA4cAAxwAAf+AAwAAAP/AAwAAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwAAA/+AAwAAA4MAAwAAAwMAAxwAAwMAAx4AAwMAAw8AAwMAAwMAAwMAAwMAAwMAAwMAAwMAAwOAAwMAAwMAAwMAAwMAAwMAAwcAAwMAAx4AAwMAAxgAA4cAAwAAAf+AAwAAAP/AAwAAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwAAA/+AAwAAA4MAAxAAAwMAAxwAAwMAAx4AAwMAAw8AAwMAAwMAAwMAAwMAAwMAAwMAAwMAAwOAAwMAAwMAAwMAAwMAAwMAAwcAAwMAAx4AAwMAAxgAA4cAAxAAAf+AAwAAAP/AAwAAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwAAA/+AAwgAA4MAAwwAAwMAAx4AAwMAAx8AAwMAAw8AAwMAAwOAAwMAAwOAAwMAAwOAAwMAAwOAAwMAAwOAAwMAAwOAAwMAAweAAwMAAx8AAwMAAx4AA4cAAwwAAf+AAwgAAP/AAwAAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwAAAADgAwAAAP/AAwYAA/+AAwcAA4MAAwOAAwMAAxzAAwMAAx7AAwMAAw9gAwMAAwNgAwMAAwNgAwMAAwMgAwMAAwPgAwMAAwNgAwMAAwNgAwMAAwdgAwMAAx7AAwMAAxnAA4cAAwGAAf+AAwcAAP/AAwYAAADgAwAAAABwAwAAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwAAAABwAwMAAADgAwGAAP/AAwHAA/+AAwBgA4MAAwBgAwMAAxwwAwMAAx4wAwMAAw8YAwMAAwMYAwMAAwMYAwMAAwMYAwMAAwOYAwMAAwMYAwMAAwMYAwMAAwcYAwMAAx44AwMAAxgwA4cAAwBwAf+AAwBgAP/AAwHAAADgAwOAAABwAwMAAAA4AwAAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwDAAAA4AwDgAABwAwBwAADgAwA4AP/AAwAYA/+AAwAYA4MAAwAMAwMAAxwMAwMAAx4OAwMAAw8GAwMAAwMGAwMAAwMGAwMAAwMGAwMAAwOGAwMAAwMGAwMAAwMGAwMAAwcOAwMAAx4OAwMAAxgMA4cAAwAcAf+AAwAcAP/AAwA4AADgAwA4AABwAwBwAAA4AwDgAAAcAwDAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAwAAAOAwA4AAAcAwAYAAA4AwAcAABwAwAMAADgAwAOAP/AAwAGA/+AAwAGA4MAAwAHAwMAAxwDAwMAAx4DAwMAAw8DAwMAAwMDgwMAAwMDgwMAAwMDgwMAAwODgwMAAwMDgwMAAwMDgwMAAwcDAwMAAx4DAwMAAxgDA4cAAwAHAf+AAwAHAP/AAwAOAADgAwAOAABwAwAeAAA4AwAcAAAcAwA4AAAOAwA4AAAHAwAwAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAYAAADgwAcAAAHAwAcAAAOAwAOAAAcAwAOAAA4AwAHAABwAwAHAADgAwADAP/AAwADA/+AAwADg4MAAwABgwMAAxwBgwMAAx4BgwMAAw8BgwMAAwMBwwMAAwMBwwMAAwMBwwMAAwOBwwMAAwMBwwMAAwMBwwMAAwcBgwMAAx4BgwMAAxgBg4cAAwADgf+AAwADgP/AAwADgADgAwAHAABwAwAHAAA4AwAPAAAcAwAOAAAOAwAeAAAHAwAcAAADgwAcAAABwwAQAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwBgAAAOAwBwAAAcAwA4AAA4AwA4AABwAwAcAADgAwAMAP/AAwAOA/+AAwAGA4MAAwAHAwMAAxwDAwMAAx4DAwMAAw8DAwMAAwMDgwMAAwMDgwMAAwMDgwMAAwODgwMAAwMDgwMAAwMDgwMAAwcDAwMAAx4DAwMAAxgHA4cAAwAHAf+AAwAGAP/AAwAOAADgAwAOAABwAwAcAAA4AwA4AAAcAwB4AAAOAwBwAAAHAwBgAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwGAAABwAwHgAADgAwDwAP/AAwBwA/+AAwAYA4MAAwAcAwMAAxwMAwMAAx4MAwMAAw8GAwMAAwMGAwMAAwMGAwMAAwMGAwMAAwOGAwMAAwMGAwMAAwMGAwMAAwcGAwMAAx4OAwMAAxgMA4cAAwAcAf+AAwA4AP/AAwB4AADgAwDwAABwAwHAAAA4AwGAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"AAAAAAAAAAAAAAAAAAAAAAAAAAADgAAAAAAPgAAAAAAcwAAAAAA4wAAAAABwwAAAAADgwAAAAAHAwAAAAAOAwAAAAAcAwAAAAA4AwGAAABwAwHgAADgAwDwAP/AAwBwA/+AAwAYA4MAAwAcAwMAAxwMAwMAAx4MAwMAAw8GAwMAAwMGAwMAAwMGAwMAAwMGAwMAAwOGAwMAAwMGAwMAAwMGAwMAAwcGAwMAAx4OAwMAAxgMA4cAAwAcAf+AAwA4AP/AAwB4AADgAwDwAABwAwHAAAA4AwGAAAAcAwAAAAAOAwAAAAAHAwAAAAADgwAAAAABwwAAAAAA4wAAAAAAcwAAAAAAPwAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAA\"];"
+  "let UNMUTE_FRAMES=UNMUTE_B64.map(b64ToBytes);"
+  "let unmuteAnimPlaying=false,unmuteAnimFrame=0;"
+  "let lastFrameBytes=null;"
+  "function drawMirrorPixels(bytes){"
   "let img=megaFrameCtx.createImageData(128,64);"
   "for(let y=0;y<64;y++){"
   "for(let x=0;x<128;x++){"
@@ -1614,10 +1644,39 @@ static const char PAGE_HTML[] PROGMEM =
   "let idx=(y*128+x)*4;"
   "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=on?255:0"
   "}}"
-  "megaFrameCtx.putImageData(img,0,0);"
+  "megaFrameCtx.putImageData(img,0,0)"
+  "}"
+  "function restoreAfterUnmute(){"
+  "if(lastFrameBytes)drawMirrorPixels(lastFrameBytes);"
+  "drawIconOverlay();"
+  "if(currentScreenId===1){drawTitleOverlay();drawNowPlayingOverlay()}"
+  "}"
+  "setInterval(function(){"
+  "if(!unmuteAnimPlaying)return;"
+  "let frame=UNMUTE_FRAMES[unmuteAnimFrame];"
+  "let img=megaFrameCtx.createImageData(48,48);"
+  "for(let y=0;y<48;y++){"
+  "for(let x=0;x<48;x++){"
+  "let byteIndex=y*6+(x>>3);"
+  "let bit=7-(x&7);"
+  "let on=(frame[byteIndex]>>bit)&1;"
+  "let idx=(y*48+x)*4;"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=on?255:0"
+  "}}"
+  "megaFrameCtx.putImageData(img,MUTE_X,MUTE_Y);"
+  "unmuteAnimFrame++;"
+  "if(unmuteAnimFrame>=UNMUTE_FRAMES.length){unmuteAnimPlaying=false;restoreAfterUnmute()}"
+  "},MUTE_FRAME_DELAY_MS);"
+  "function applyFrameData(buf){"
+  "if(!megaFrameCtx||buf.byteLength<1026)return;"
+  "let bytes=new Uint8Array(buf);"
+  "lastFrameBytes=bytes;"
+  "drawMirrorPixels(bytes);"
   "currentIconId=bytes[1024];"
   "drawIconOverlay();"
-  "currentScreenId=bytes[1025];"
+  "let newScreenId=bytes[1025];"
+  "if(currentScreenId===2&&newScreenId!==2&&!unmuteAnimPlaying){unmuteAnimPlaying=true;unmuteAnimFrame=0}"
+  "currentScreenId=newScreenId;"
   "if(currentScreenId===1){drawTitleOverlay();drawNowPlayingOverlay()}"
   "else if(currentScreenId===2){drawMuteOverlay()}"
   "megaFrameCanvas.style.display='block'"
