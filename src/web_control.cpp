@@ -391,24 +391,11 @@ static const char PAGE_HTML[] PROGMEM =
   // приходит бинарным WS-кадром поверх уже открытого liveWs (см. connectLiveWs()). Скрыт по
   // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData()). Над кнопками
   // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
-  // 30%), по центру. Обёртка (не сам canvas) отвечает за размер/фон/показ/скругление — счётчик и
-  // бегущая строка названия трека рисуются НЕ на canvas, а обычными HTML-элементами поверх него
-  // (см. megaMirrorCounter/megaMirrorTitle ниже) — настоящим шрифтом браузера, а не битмап-копией
-  // шрифта Mega: пиксельный шрифт на таком мелком размере всё равно оставался угловатым/грубым,
-  // а этот текст и так не претендует на точное пиксельное совпадение с экраном Mega (см.
-  // drawNowPlayingOverlay()/drawTitleOverlay())
-  "<div id=megaFrameWrap style='display:none;width:70%;margin:0 auto 10px;position:relative;"
-  "background-image:linear-gradient(135deg,#000,#3a3a3a);border-radius:8px;overflow:hidden'>"
-  "<canvas id=megaFramePixel width=128 height=64 style='display:block;width:100%;height:auto;"
-  "image-rendering:pixelated'></canvas>"
-  "<div id=megaMirrorTitle style='display:none;position:absolute;left:3.125%;top:10.94%;"
-  "width:93.75%;height:17.19%;overflow:hidden;white-space:nowrap;pointer-events:none;"
-  "font:bold 8px/1.1 \"Courier New\",ui-monospace,monospace;color:rgb(255,176,0)'>"
-  "<span id=megaMirrorTitleText style='display:inline-block'></span></div>"
-  "<div id=megaMirrorCounter style='display:none;position:absolute;left:3.125%;top:48.44%;"
-  "width:93.75%;pointer-events:none;"
-  "font:bold 8px/1.1 \"Courier New\",ui-monospace,monospace;color:rgb(255,176,0)'></div>"
-  "</div>"
+  // 30%), по центру
+  "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:70%;"
+  "image-rendering:pixelated;background-image:linear-gradient(135deg,#000,#3a3a3a);"
+  "border-radius:8px;"
+  "margin:0 auto 10px'></canvas>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
   "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
@@ -1458,12 +1445,8 @@ static const char PAGE_HTML[] PROGMEM =
   // Раскодирует тайловый формат u8g2 (128x64/8=1024 байта): для пикселя (x,y) —
   // tileCol=x>>3, colInTile=x&7, tileRow=y>>3, byteIndex=tileRow*128+tileCol*8+colInTile,
   // бит=y&7 (LSB=верх). См. frame_mirror.h в обоих репозиториях за источником формата
-  "let megaFrameWrap=document.getElementById('megaFrameWrap');"
   "let megaFrameCanvas=document.getElementById('megaFramePixel');"
   "let megaFrameCtx=megaFrameCanvas?megaFrameCanvas.getContext('2d'):null;"
-  "let megaMirrorTitleEl=document.getElementById('megaMirrorTitle');"
-  "let megaMirrorTitleTextEl=document.getElementById('megaMirrorTitleText');"
-  "let megaMirrorCounterEl=document.getElementById('megaMirrorCounter');"
   // ID иконки (см. FRAME_MIRROR_ICON_* в Mega-репозитории, frame_mirror.h) не про синхронизацию
   // с реальной анимацией на Mega (та крутится в фоне сама по себе) — а чтобы знать, КАКОЙ набор
   // кадров крутить у себя САМОСТОЯТЕЛЬНО, своим локальным таймером (ICON_B64 ниже — те же самые
@@ -1536,69 +1519,59 @@ static const char PAGE_HTML[] PROGMEM =
   // глифов, чтобы быть читаемыми, а бит-копия ЛЮБОГО текста потребовала бы держать в прошивке
   // весь алфавит шрифта u8g2 растрами — несоразмерно ради счётчика времени
   "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING, 2=FRAME_MIRROR_SCREEN_MUTE
-  // Счётчик и бегущая строка названия трека — обычные HTML-элементы (megaMirrorCounter/
-  // megaMirrorTitle, position:absolute поверх canvas, см. HTML выше), не canvas-рисование:
-  // сначала пробовали canvas fillText() (сглаживает края шрифта — рядом с остальным зеркалом,
-  // где пиксель либо полностью включён, либо выключен, текст выглядел размытым и бледнее), потом
-  // собственный битмап-шрифт (5x7 из Adafruit GFX, попиксельно через fillRect — сглаживания не
-  // было, но на мелком размере глифы выходили угловатыми). Настоящий шрифт браузера решает и то,
-  // и другое разом: сглаживание там уместно (это не имитация пикселей OLED, а текст поверх неё),
-  // и рисуется он на любом размере читаемо. Область под текстом на canvas всё равно нужно чистить
-  // (clearRect) — иначе сквозь HTML-текст просвечивали бы «запечённые» в буфере пиксели того
-  // текста, что Mega сама нарисовала при последней полной отправке кадра
   "function drawNowPlayingOverlay(){"
-  "if(!megaFrameCtx)return;"
-  "if(currentScreenId!==1){megaMirrorCounterEl.style.display='none';return}"
+  "if(!megaFrameCtx||currentScreenId!==1)return;"
   "megaFrameCtx.clearRect(4,29,120,15);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
-  "megaMirrorCounterEl.style.display='block';"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "megaFrameCtx.font='8px monospace';"
+  "megaFrameCtx.textBaseline='alphabetic';"
   "if(trackLen>0){"
   "let pos=trackPos+(Date.now()-trackFetchTime);"
   "if(pos<0)pos=0;if(pos>trackLen)pos=trackLen;"
-  "megaMirrorCounterEl.textContent=fmtTime(pos)+' / '+fmtTime(trackLen);"
+  "megaFrameCtx.fillText(fmtTime(pos)+' / '+fmtTime(trackLen),4,38);"
   "let innerWidth=Math.min(Math.round(120*pos/trackLen),118);"
-  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
   "megaFrameCtx.fillRect(4,40,120,1);"
   "megaFrameCtx.fillRect(4,43,120,1);"
   "megaFrameCtx.fillRect(4,40,1,4);"
   "megaFrameCtx.fillRect(123,40,1,4);"
   "if(innerWidth>0)megaFrameCtx.fillRect(5,41,innerWidth,2)"
   "}else{"
-  "megaMirrorCounterEl.textContent='Playing'"
+  "megaFrameCtx.fillText('Playing',4,38)"
   "}"
   "}"
-  // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще. Вызывается
-  // безусловно (не только при currentScreenId===1) — сама функция теперь ещё и прячет HTML-элемент,
-  // когда экран сменился на что-то другое
-  "setInterval(drawNowPlayingOverlay,200);"
+  // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще
+  "setInterval(function(){if(currentScreenId===1)drawNowPlayingOverlay()},200);"
   // Бегущая строка названия трека — та же идея, что у прогресс-бара: updateNowPlayingTitleScroll()
   // на Mega тикает частичным updateDisplayArea(), не подключён к зеркалу; название и так уже
   // известно веб-странице (mirrorTrackText, из applyTrackData() — тот же /track, что и у
-  // собственного, отдельного заголовка трека на этой же странице). Не пиксель-в-пиксель повтор
-  // renderNowPlayingTitleClipped() (той нужна точная ширина в u8g2-пикселях, здесь — реальные CSS-
-  // пиксели реального шрифта, которые заранее не известны) — обычный "бегущий" эффект: проезжает
-  // через видимое окно целиком слева направо... то есть справа налево, с паузой перед повтором
+  // собственного, отдельного заголовка трека на этой же странице). Геометрия — как в
+  // renderNowPlayingTitleClipped() (display_logic.cpp, Mega-репозиторий): окно показа 4,7,120x11,
+  // шаг NOW_PLAYING_TITLE_SCROLL_STEP_MS=120мс на 1px, разрыв между повторами 16px
   "let mirrorTrackText='';"
-  "let titleScrollLastText=null,titleScrollStartTime=0;"
-  "const TITLE_SCROLL_PX_PER_SEC=45,TITLE_SCROLL_PAUSE_MS=700;"
+  "let titleScrollOffset=0,titleScrollLastText=null,titleScrollLastStep=0;"
   "function drawTitleOverlay(){"
-  "if(!megaFrameCtx)return;"
-  "if(currentScreenId!==1||!mirrorTrackText){megaMirrorTitleEl.style.display='none';return}"
+  "if(!megaFrameCtx||currentScreenId!==1)return;"
   "megaFrameCtx.clearRect(4,7,120,11);"
-  "megaMirrorTitleEl.style.display='block';"
-  "if(mirrorTrackText!==titleScrollLastText){"
-  "titleScrollLastText=mirrorTrackText;titleScrollStartTime=Date.now();"
-  "megaMirrorTitleTextEl.textContent=mirrorTrackText;"
+  "let text=mirrorTrackText;"
+  "if(!text)return;"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "megaFrameCtx.font='8px monospace';"
+  "megaFrameCtx.textBaseline='alphabetic';"
+  "let textWidth=megaFrameCtx.measureText(text).width;"
+  "if(textWidth<=120){megaFrameCtx.fillText(text,4,16);return}"
+  "if(text!==titleScrollLastText){titleScrollLastText=text;titleScrollOffset=0;titleScrollLastStep=Date.now()}"
+  "let cycleWidth=textWidth+16;"
+  "let now=Date.now();"
+  "if(now-titleScrollLastStep>=120){titleScrollLastStep=now;titleScrollOffset=(titleScrollOffset+1)%cycleWidth}"
+  "megaFrameCtx.save();"
+  "megaFrameCtx.beginPath();"
+  "megaFrameCtx.rect(4,7,120,11);"
+  "megaFrameCtx.clip();"
+  "megaFrameCtx.fillText(text,4-titleScrollOffset,16);"
+  "if(titleScrollOffset>cycleWidth-120)megaFrameCtx.fillText(text,4-titleScrollOffset+cycleWidth,16);"
+  "megaFrameCtx.restore()"
   "}"
-  "let boxWidth=megaMirrorTitleEl.clientWidth;"
-  "let textWidth=megaMirrorTitleTextEl.offsetWidth;"
-  "if(textWidth<=boxWidth){megaMirrorTitleTextEl.style.transform='translateX(0)';return}"
-  "let travel=boxWidth+textWidth;"
-  "let durationMs=travel/TITLE_SCROLL_PX_PER_SEC*1000;"
-  "let elapsed=(Date.now()-titleScrollStartTime)%(durationMs+TITLE_SCROLL_PAUSE_MS);"
-  "let x=elapsed>durationMs?boxWidth:boxWidth-(elapsed/durationMs)*travel;"
-  "megaMirrorTitleTextEl.style.transform='translateX('+x+'px)'"
-  "}"
-  "setInterval(drawTitleOverlay,120);"
+  "setInterval(function(){if(currentScreenId===1)drawTitleOverlay()},120);"
   // Mute — целиком локальная анимация, та же идея, что у иконок пунктов меню: mute_animation.cpp
   // на Mega шлёт только ПЕРВЫЙ кадр полностью (см. FRAME_MIRROR_SCREEN_MUTE в Mega-репозитории),
   // дальше крутит анимацию частичными updateDisplayArea(), в зеркало не попадающими. Те же 18
@@ -1689,11 +1662,11 @@ static const char PAGE_HTML[] PROGMEM =
   // Просто копим самые свежие данные — покажем их разом, когда анимация доиграет
   // (restoreAfterUnmute())
   "if(unmuteAnimPlaying){lastFrameBytes=bytes;pendingIconId=newIconId;pendingScreenId=newScreenId;"
-  "megaFrameWrap.style.display='block';return}"
+  "megaFrameCanvas.style.display='block';return}"
   "if(currentScreenId===2&&newScreenId!==2){"
   "lastFrameBytes=bytes;pendingIconId=newIconId;pendingScreenId=newScreenId;"
   "unmuteAnimPlaying=true;unmuteAnimFrame=0;"
-  "megaFrameWrap.style.display='block';return"
+  "megaFrameCanvas.style.display='block';return"
   "}"
   "lastFrameBytes=bytes;"
   "drawMirrorPixels(bytes);"
@@ -1702,7 +1675,7 @@ static const char PAGE_HTML[] PROGMEM =
   "currentScreenId=newScreenId;"
   "if(currentScreenId===1){drawTitleOverlay();drawNowPlayingOverlay()}"
   "else if(currentScreenId===2){drawMuteOverlay()}"
-  "megaFrameWrap.style.display='block'"
+  "megaFrameCanvas.style.display='block'"
   "}"
   "let liveWs=null;"
   "let liveWsRetryDelay=1000;"
