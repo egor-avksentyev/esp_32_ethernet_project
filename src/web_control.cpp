@@ -1519,24 +1519,47 @@ static const char PAGE_HTML[] PROGMEM =
   // глифов, чтобы быть читаемыми, а бит-копия ЛЮБОГО текста потребовала бы держать в прошивке
   // весь алфавит шрифта u8g2 растрами — несоразмерно ради счётчика времени
   "let currentScreenId=0;" // 0=FRAME_MIRROR_SCREEN_OTHER, 1=FRAME_MIRROR_SCREEN_NOW_PLAYING, 2=FRAME_MIRROR_SCREEN_MUTE
+  "const FONT5X7_START=32,FONT5X7_B64=\"AAAAAAAAAF8AAAAHAAcAFH8UfxQkKn8qEiMTCGRiNklWIFAACAcDAAAcIkEAAEEiHAAqHH8cKggIPggIAIBwMAAICAgICAAAYGAAIBAIBAI+UUlFPgBCf0AAcklJSUYhQUlNMxgUEn8QJ0VFRTk8SklJMUEhEQkHNklJSTZGSUkpHgAAFAAAAEA0AAAACBQiQRQUFBQUAEEiFAgCAVkJBj5BXVlOfBIREnx/SUlJNj5BQUEif0FBQT5/SUlJQX8JCQkBPkFBUXN/CAgIfwBBf0EAIEBBPwF/CBQiQX9AQEBAfwIcAn9/BAgQfz5BQUE+fwkJCQY+QVEhXn8JGSlGJklJSTIDAX8BAz9AQEA/HyBAIB8/QDhAP2MUCBRjAwR4BANhWUlNQwB/QUFBAgQIECAAQUFBfwQCAQIEQEBAQEAAAwcIACBUVHhAfyhERDg4REREKDhERCh/OFRUVBgACH4JAhikpJx4fwgEBHgARH1AACBAQD0AfxAoRAAAQX9AAHwEeAR4fAgEBHg4REREOPwYJCQYGCQkGPx8CAQECEhUVFQkBAQ/RCQ8QEAgfBwgQCAcPEAwQDxEKBAoREyQkJB8RGRUTEQACDZBAAAAdwAAAEE2CAACAQIEAg==\";"
+  // Тот же классический 5x7-битмап-шрифт, что встроен в Adafruit GFX (glcdfont.c, уже
+  // зависимость прошивки Mega) — вместо canvas fillText(): та ВСЕГДА сглаживает края шрифта
+  // (частичная альфа на границах глифа), рядом с остальным зеркалом (только полностью
+  // включено/выключено, без полутонов) текст выглядел размытым и бледнее. Собственная
+  // бинаризация результата тоже пробовали — на мелком 8px шрифте резкий порог ломал сами
+  // глифы (цифры становились неразборчивы). Настоящий битмап-шрифт рисуется точно так же,
+  // как иконки/Mute — попиксельно, без сглаживания в принципе, никаких полутонов не возникает.
+  // Формат: 5 байт на символ (ASCII 32.."~"), каждый байт — вертикальный столбец, бит0=верх
+  "let FONT5X7_BYTES=b64ToBytes(FONT5X7_B64);"
+  "function bitmapTextWidth(text){return text.length*6}"
+  "function drawBitmapText(text,x,y){"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
+  "for(let i=0;i<text.length;i++){"
+  "let code=text.charCodeAt(i);"
+  "if(code<32||code>126)continue;"
+  "let idx=(code-32)*5;"
+  "for(let col=0;col<5;col++){"
+  "let colByte=FONT5X7_BYTES[idx+col];"
+  "for(let row=0;row<7;row++){"
+  "if((colByte>>row)&1)megaFrameCtx.fillRect(x+i*6+col,y+row,1,1)"
+  "}"
+  "}"
+  "}"
+  "}"
   "function drawNowPlayingOverlay(){"
   "if(!megaFrameCtx||currentScreenId!==1)return;"
   "megaFrameCtx.clearRect(4,29,120,15);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
-  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
-  "megaFrameCtx.font='8px monospace';"
-  "megaFrameCtx.textBaseline='alphabetic';"
   "if(trackLen>0){"
   "let pos=trackPos+(Date.now()-trackFetchTime);"
   "if(pos<0)pos=0;if(pos>trackLen)pos=trackLen;"
-  "megaFrameCtx.fillText(fmtTime(pos)+' / '+fmtTime(trackLen),4,38);"
+  "drawBitmapText(fmtTime(pos)+' / '+fmtTime(trackLen),4,31);"
   "let innerWidth=Math.min(Math.round(120*pos/trackLen),118);"
+  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
   "megaFrameCtx.fillRect(4,40,120,1);"
   "megaFrameCtx.fillRect(4,43,120,1);"
   "megaFrameCtx.fillRect(4,40,1,4);"
   "megaFrameCtx.fillRect(123,40,1,4);"
   "if(innerWidth>0)megaFrameCtx.fillRect(5,41,innerWidth,2)"
   "}else{"
-  "megaFrameCtx.fillText('Playing',4,38)"
+  "drawBitmapText('Playing',4,31)"
   "}"
   "}"
   // Свой независимый таймер, как у иконки — не завязан на приход кадров зеркала вообще
@@ -1554,11 +1577,8 @@ static const char PAGE_HTML[] PROGMEM =
   "megaFrameCtx.clearRect(4,7,120,11);"
   "let text=mirrorTrackText;"
   "if(!text)return;"
-  "megaFrameCtx.fillStyle='rgb(255,176,0)';"
-  "megaFrameCtx.font='8px monospace';"
-  "megaFrameCtx.textBaseline='alphabetic';"
-  "let textWidth=megaFrameCtx.measureText(text).width;"
-  "if(textWidth<=120){megaFrameCtx.fillText(text,4,16);return}"
+  "let textWidth=bitmapTextWidth(text);"
+  "if(textWidth<=120){drawBitmapText(text,4,9);return}"
   "if(text!==titleScrollLastText){titleScrollLastText=text;titleScrollOffset=0;titleScrollLastStep=Date.now()}"
   "let cycleWidth=textWidth+16;"
   "let now=Date.now();"
@@ -1567,8 +1587,8 @@ static const char PAGE_HTML[] PROGMEM =
   "megaFrameCtx.beginPath();"
   "megaFrameCtx.rect(4,7,120,11);"
   "megaFrameCtx.clip();"
-  "megaFrameCtx.fillText(text,4-titleScrollOffset,16);"
-  "if(titleScrollOffset>cycleWidth-120)megaFrameCtx.fillText(text,4-titleScrollOffset+cycleWidth,16);"
+  "drawBitmapText(text,4-titleScrollOffset,9);"
+  "if(titleScrollOffset>cycleWidth-120)drawBitmapText(text,4-titleScrollOffset+cycleWidth,9);"
   "megaFrameCtx.restore()"
   "}"
   "setInterval(function(){if(currentScreenId===1)drawTitleOverlay()},120);"
