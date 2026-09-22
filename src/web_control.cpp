@@ -393,7 +393,8 @@ static const char PAGE_HTML[] PROGMEM =
   // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
   // 30%), по центру
   "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:70%;"
-  "image-rendering:pixelated;background:#000;border-radius:8px;margin:0 auto 10px'></canvas>"
+  "image-rendering:pixelated;background:rgba(128,128,128,.35);border-radius:8px;"
+  "margin:0 auto 10px'></canvas>"
   "<div id=status>...</div>"
   "<div><button onclick=cmd('left')>&larr;</button>"
   "<button onclick=cmd('enter') data-i18n=ok>OK</button>"
@@ -1472,9 +1473,11 @@ static const char PAGE_HTML[] PROGMEM =
   "let bit=7-(x&7);"
   "let on=(frame[byteIndex]>>bit)&1;"
   // Тёплый ламповый жёлто-янтарный вместо серого/белого (см. applyFrameData() ниже — тот же
-  // цвет, оба должны совпадать: это один "экран", просто рисуется в два прохода)
+  // цвет, оба должны совпадать: это один "экран", просто рисуется в два прохода). Погашенный
+  // пиксель — полностью прозрачный (alpha=0), не чёрный — иначе полупрозрачный серый фон
+  // канваса (см. CSS) перекрывался бы сплошной заливкой на каждый кадр
   "let idx=(y*32+x)*4;"
-  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=255"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=on?255:0"
   "}}"
   "megaFrameCtx.putImageData(img,ox,oy)"
   "}"
@@ -1497,8 +1500,7 @@ static const char PAGE_HTML[] PROGMEM =
   "let pos=trackPos+(Date.now()-trackFetchTime);"
   "if(pos<0)pos=0;if(pos>trackLen)pos=trackLen;"
   "let innerWidth=Math.min(Math.round(120*pos/trackLen),118);"
-  "megaFrameCtx.fillStyle='#000';"
-  "megaFrameCtx.fillRect(4,40,120,4);"
+  "megaFrameCtx.clearRect(4,40,120,4);" // прозрачно, не чёрным — та же причина, что у applyFrameData()
   "megaFrameCtx.fillStyle='rgb(255,176,0)';"
   "megaFrameCtx.fillRect(4,40,120,1);"
   "megaFrameCtx.fillRect(4,43,120,1);"
@@ -1517,9 +1519,11 @@ static const char PAGE_HTML[] PROGMEM =
   "let tileCol=x>>3,colInTile=x&7,tileRow=y>>3;"
   "let byteIndex=tileRow*128+tileCol*8+colInTile;"
   "let on=(bytes[byteIndex]>>(y&7))&1;"
-  // Тёплый ламповый жёлто-янтарный (255,176,0) вместо серого/белого — по просьбе пользователя
+  // Тёплый ламповый жёлто-янтарный (255,176,0) вместо серого/белого — по просьбе пользователя.
+  // Погашенный пиксель прозрачный (alpha=0) — сквозь него виден полупрозрачный серый фон
+  // канваса (CSS), не сплошная заливка
   "let idx=(y*128+x)*4;"
-  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=255"
+  "img.data[idx]=on?255:0;img.data[idx+1]=on?176:0;img.data[idx+2]=0;img.data[idx+3]=on?255:0"
   "}}"
   "megaFrameCtx.putImageData(img,0,0);"
   "currentIconId=bytes[1024];"
