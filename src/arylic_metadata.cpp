@@ -622,6 +622,17 @@ static void pollArylicMetadataOnce() {
   if (playing) {
     lastPlayingPosMs = curposNow;
   }
+  // trackPlaying — ДО отправки PLAY: Меге, не после (раньше выставлялся ниже, за блокирующим
+  // запросом обложки, см. pollArylicAlbumArt()) — иначе реальная гонка: Mega получает PLAY:1,
+  // сама включается из Standby и шлёт POWER: обратно ЗНАЧИТЕЛЬНО раньше, чем этот же поток
+  // успевает дойти до старого места установки trackPlaying=true (после запроса обложки).
+  // applyWebPowerState() (web_control.cpp) в этот момент читает ещё старое (false) значение
+  // через arylicTrackIsPlaying() и повторно жмёт onepause на уже играющий трек — раз в него
+  // переключается пауза. Живьём подтверждено 2026-09-23 (пауза ровно в момент POWER:0)
+  {
+    MutexGuard g(stateMutex);
+    trackPlaying = playing;
+  }
   megaLinkSendPlayState(playing);
   if (!playing) {
     // Не играет (pause/stop/idle) — метадату не шлём, PLAY:0 выше уже сказал Mega всё,
@@ -662,7 +673,7 @@ static void pollArylicMetadataOnce() {
   {
     MutexGuard g(stateMutex);
     currentVolume = newVolume;
-    trackPlaying = true;
+    // trackPlaying уже выставлен выше, до megaLinkSendPlayState() — см. комментарий там
     trackPosMs = newPosMs;
     trackLenMs = newLenMs;
     trackCaptureMillis = millis();
