@@ -17,8 +17,8 @@
 #define MEGA_LINK_BAUD 115200
 #define MEGA_LINK_META_MAX_LEN 40 // Максимум символов в строке "META:" — под однострочный показ на OLED
 
-// --- Экспериментальный ОТДЕЛЬНЫЙ UART под попиксельное зеркало OLED (frame_mirror.h/.cpp,
-// ветка experiment/frame-mirror-serial3 — НЕ main). Аппаратный UART1 (Serial1) — свободен, если
+// --- ОТДЕЛЬНЫЙ UART под попиксельное зеркало OLED (frame_mirror.h/.cpp). Аппаратный UART1
+// (Serial1) — свободен, если
 // явно задать пины через begin(baud, config, rx, tx) (стандартные пины UART1 на многих платах
 // заняты SPI flash, но ESP32 умеет перенаправить UART на любой GPIO через матрицу выводов).
 // TX не нужен — канал строго Mega->ESP32, поэтому FRAME_MIRROR_TX_PIN не задействован (-1)

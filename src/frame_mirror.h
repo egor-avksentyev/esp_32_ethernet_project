@@ -1,8 +1,7 @@
 #pragma once
 
 // ============================================================================
-// frame_mirror.h/.cpp — ЭКСПЕРИМЕНТ (ветка experiment/frame-mirror-serial3, НЕ main):
-// приёмник попиксельного кадра OLED с Mega по ОТДЕЛЬНОМУ, выделенному аппаратному UART
+// frame_mirror.h/.cpp — приёмник попиксельного кадра OLED с Mega по ОТДЕЛЬНОМУ, выделенному аппаратному UART
 // (Serial1, см. FRAME_MIRROR_RX_PIN/FRAME_MIRROR_BAUD в config.h) — не Serial2/mega_link.h/
 // .cpp (существующий, протестированный линк: CMD:/META:/PLAY:/POWER:/TEMP:/VOLT:/...).
 //

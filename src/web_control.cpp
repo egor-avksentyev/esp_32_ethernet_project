@@ -396,8 +396,8 @@ static const char PAGE_HTML[] PROGMEM =
   "<button id=remoteToggle onclick=toggleCollapse('remoteCollapse')>"
   "<span data-i18n=remoteControl>Remote Control</span></button>"
   "<div id=remoteCollapse><div>"
-  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED,
-  // приходит бинарным WS-кадром поверх уже открытого liveWs (см. connectLiveWs()). Скрыт по
+  // Попиксельное зеркало OLED, приходит бинарным WS-кадром поверх уже открытого liveWs (см.
+  // connectLiveWs()). Скрыт по
   // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData()). Над кнопками
   // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
   // 30%), по центру
@@ -1450,8 +1450,7 @@ static const char PAGE_HTML[] PROGMEM =
   // недоступен/оборвался — HTTP-фолбэк сам продолжает работать как раньше, страница не ломается
   "let lastLiveMsgTime=0;"
   "function liveDataFresh(){return Date.now()-lastLiveMsgTime<3000}"
-  // Эксперимент (ветка experiment/frame-mirror-serial3, не main) — попиксельное зеркало OLED.
-  // Раскодирует тайловый формат u8g2 (128x64/8=1024 байта): для пикселя (x,y) —
+  // Попиксельное зеркало OLED. Раскодирует тайловый формат u8g2 (128x64/8=1024 байта): для пикселя (x,y) —
   // tileCol=x>>3, colInTile=x&7, tileRow=y>>3, byteIndex=tileRow*128+tileCol*8+colInTile,
   // бит=y&7 (LSB=верх). См. frame_mirror.h в обоих репозиториях за источником формата
   "let megaFrameCanvas=document.getElementById('megaFramePixel');"
@@ -2695,8 +2694,7 @@ static void liveWsBroadcastPoll() {
   liveWsServer.broadcastTXT("{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}");
 }
 
-// Эксперимент (ветка experiment/frame-mirror-serial3, не main) — сырой бинарный WS-фрейм,
-// не JSON: клиент отличает его от текстовых push-сообщений выше по типу (ArrayBuffer vs
+// Сырой бинарный WS-фрейм, не JSON: клиент отличает его от текстовых push-сообщений выше по типу (ArrayBuffer vs
 // строка, см. connectLiveWs() в PAGE_HTML), поэтому обёртка не нужна вообще
 void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
   if (liveWsServer.connectedClients() == 0) {
