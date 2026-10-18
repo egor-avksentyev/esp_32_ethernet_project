@@ -250,6 +250,91 @@ void arylicTriggerFactoryReset() {
   Serial.println("[arylic] заводской сброс: запрос отправлен, ответа не ждём");
 }
 
+static String toHexUpper(const String& input) {
+  static const char hexDigits[] = "0123456789ABCDEF";
+  String out;
+  out.reserve(input.length() * 2);
+  for (size_t i = 0; i < input.length(); i++) {
+    uint8_t b = (uint8_t)input[i];
+    out += hexDigits[(b >> 4) & 0xF];
+    out += hexDigits[b & 0xF];
+  }
+  return out;
+}
+
+void arylicProvisionWifiIfInSetupMode(const char* homeSsid, const char* homePassword) {
+  Serial.println("[arylic] проверяю, не стоит ли Arylic сейчас в режиме настройки Wi-Fi...");
+  int n = WiFi.scanNetworks();
+  bool arylicSetupSeen = false;
+  bool homeSeen = false;
+  int homeChannel = 1; // дефолт, если домашняя сеть не попадётся в этом же скане
+  wifi_auth_mode_t homeEncType = WIFI_AUTH_WPA2_PSK; // дефолт — см. ниже про безопасный фолбэк
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == ARYLIC_SETUP_AP_SSID) {
+      arylicSetupSeen = true;
+    }
+    if (WiFi.SSID(i) == String(homeSsid)) {
+      homeChannel = WiFi.channel(i);
+      homeEncType = WiFi.encryptionType(i);
+      homeSeen = true;
+    }
+  }
+  WiFi.scanDelete();
+
+  if (!arylicSetupSeen) {
+    Serial.println("[arylic] его точка настройки не видна — скорее всего, не сбрасывался заодно с ESP32, пропускаю этот шаг");
+    return;
+  }
+  Serial.println("[arylic] вижу его временную точку настройки — пробую передать домашние креды напрямую, без 4stream");
+  if (!homeSeen) {
+    Serial.println("[arylic] домашняя сеть не попалась в этом же скане — использую дефолт (канал 1, WPA2PSK/AES)");
+  }
+
+  bool isOpen = homeSeen && homeEncType == WIFI_AUTH_OPEN;
+  const char* authStr = isOpen ? "OPEN" : "WPA2PSK";
+  const char* encryStr = isOpen ? "NONE" : "AES";
+
+  // Временная точка Arylic в режиме настройки всегда открытая (без пароля)
+  WiFi.begin(ARYLIC_SETUP_AP_SSID);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < ARYLIC_PROVISION_JOIN_TIMEOUT_MS) {
+    delay(200);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[arylic] не успел присоединиться к его точке настройки за отведённое время, пропускаю");
+    return;
+  }
+
+  IPAddress gateway = WiFi.gatewayIP();
+  if (gateway == IPAddress((uint32_t)0)) {
+    gateway = IPAddress(ARYLIC_PROVISION_AP_GATEWAY_OCTETS);
+  }
+  Serial.print("[arylic] присоединился к его точке настройки, гейтвей: ");
+  Serial.println(gateway);
+
+  String url = "https://" + gateway.toString() + "/httpapi.asp?command=wlanConnectApEx:ssid=" +
+               toHexUpper(String(homeSsid)) + ":ch=" + String(homeChannel) + ":auth=" + authStr +
+               ":encry=" + encryStr + ":pwd=" + toHexUpper(String(homePassword)) + ":chext=1";
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(5000);
+  http.begin(client, url);
+  int httpCode = http.GET();
+  String resp = http.getString();
+  http.end();
+  Serial.print("[arylic] wlanConnectApEx -> код ");
+  Serial.print(httpCode);
+  Serial.print(", ответ: ");
+  Serial.println(resp);
+  // Не опрашиваем wlanGetConnectState — живой тест 2026-10-18 показал, что временная точка
+  // Arylic обычно гаснет в процессе переключения на домашнюю сеть раньше, чем успеваешь
+  // получить вразумительный ответ оттуда. Дальше просто доверяем команде; вызывающая сторона
+  // (handleSave() в wifi_provisioning.cpp) следом уходит в ESP.restart(), что само по себе
+  // сбросит это временное STA-подключение
+}
+
 void arylicNotifyOnepausePressed() {
   MutexGuard g(stateMutex);
   // Оверрайд нужен ТОЛЬКО для AirPlay (mode "1") — там "status" подтверждённо не меняется на

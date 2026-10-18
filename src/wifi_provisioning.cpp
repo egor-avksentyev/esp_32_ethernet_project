@@ -1,5 +1,6 @@
 #include "wifi_provisioning.h"
 #include "wifi_setup.h"
+#include "arylic_metadata.h"
 #include "config.h"
 #include <WiFi.h>
 #include <WebServer.h>
@@ -51,7 +52,13 @@ static void handleSave() {
     "<!DOCTYPE html><html><head><meta charset=utf-8></head>"
     "<body style='font-family:sans-serif;text-align:center;padding-top:40px;background:#111;color:#eee'>"
     "<h2>Сохранено</h2><p>Перезагружаюсь и подключаюсь к \"" + ssid + "\"...</p></body></html>");
-  delay(1000); // даём TCP-ответу реально уйти клиенту, прежде чем рвать сеть перезагрузкой
+  delay(50); // даём TCP-ответу реально уйти клиенту, прежде чем тратить время на шаг ниже
+  // Параллельно пробуем передать те же креды и Arylic, если он тоже сейчас в режиме настройки
+  // (общий сброс сбрасывает обоих разом, см. handleFactoryReset() в web_control.cpp) — чтобы
+  // пользователю никогда не пришлось открывать приложение 4stream/ForStream отдельно для этого.
+  // Best-effort: если Arylic не сбрасывался заодно — тихо ничего не делает за долю секунды
+  arylicProvisionWifiIfInSetupMode(ssid.c_str(), password.c_str());
+  delay(1000); // тот же запас, что и раньше, перед тем как рвать сеть перезагрузкой
   ESP.restart();
 }
 
