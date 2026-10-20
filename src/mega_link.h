@@ -13,6 +13,16 @@
 // 260422-030547-megaatmega2560) — CMD:/IP:/PLAY:/ARYLIC:/SRC:/POS: принимаются и используются
 // (META:/PLAY:/SRC:/POS: двигают полноэкранный "Now Playing" и автопереключение Source, IP:/
 // ARYLIC: показываются в пункте меню Info).
+//
+// KnobControl Фаза 4 (2026-10-20) — четыре новые входящие телеграммы от Mega: MENU:/
+// SETTINGS:/MUTE:/STREAMER: (полный формат — esp32_link.h Mega-репозитория). ESP32 здесь
+// играет роль ЧИСТОГО ПРОКСИ, без своей логики — handleMegaLine() просто перепаковывает
+// остаток строки после префикса в "{"type":"<menu|settings|mute|streamer>","text":"..."}"
+// и шлёт дальше по WS82 (см. webControlBroadcastText() в web_control.h) — тем же принципом,
+// что уже есть у "arylic" (raw text field, не структурные поля; сам ESP32 не разбирает
+// содержимое и не хранит его типизированно, в отличие от POWER:/TEMP:/VOLT: выше). Знает
+// значение каждого поля только кноп (другой репозиторий), ему и положено. В обратную
+// сторону — megaLinkSendJump() ниже, зеркально CMD:J<index> от кнопа.
 // ============================================================================
 
 #include <Arduino.h>
@@ -41,10 +51,17 @@ float megaLinkTemp(uint8_t index);
 bool megaLinkVoltageKnown();
 int megaLinkVoltage();
 
-// Отправляет "CMD:<letter>\n" — letter один из: R L E U D M P S
-// (right/left/enter/up/down/mute/power/set — тот же словарь действий, что был
-// у WEB_ACTIONS в experiment/ethernet-arylic-webctl/src/web_control.cpp на Mega)
+// Отправляет "CMD:<letter>\n" — letter один из: R L E U D M P S X
+// (right/left/enter/up/down/mute/power/set/exit — тот же словарь действий, что был
+// у WEB_ACTIONS в experiment/ethernet-arylic-webctl/src/web_control.cpp на Mega; X — новое,
+// KnobControl Фаза 4, см. esp32_link.h Mega-репозитория)
 void megaLinkSendCommand(char actionLetter);
+
+// Отправляет "CMD:J<index>\n" (KnobControl Фаза 4) — прыжок сразу на пункт меню <index>
+// (0..MENU_ITEM_COUNT-1 на стороне Mega, порядок как в её menuItems[]) и вход в его
+// настройку одним действием. ESP32 не знает, что означает конкретное число — чистый проброс
+// того, что пришло от кнопа (см. esp32_link.h Mega-репозитория за полным описанием)
+void megaLinkSendJump(int index);
 
 // Отправляет "META:<text>\n" — text без переводов строк, обрезается до разумной длины
 // под однострочный показ на OLED (см. MEGA_LINK_META_MAX_LEN в mega_link.cpp)

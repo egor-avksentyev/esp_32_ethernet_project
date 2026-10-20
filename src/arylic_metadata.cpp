@@ -426,6 +426,16 @@ static void extractStringField(const String& payload, const char* key, char* out
 static void computeSourceName(const String& payload, char* out, size_t outMax) {
   char vendor[48];
   extractStringField(payload, "\"vendor\":\"", vendor, sizeof(vendor));
+  // Найдено живьём (2026-10-20, через KnobControl): Arylic иногда отдаёт буквально
+  // "vendor":"-" для настоящей Spotify Connect сессии (не просто пустую строку) — похоже,
+  // собственный сентинел LinkPlay "неизвестно", а не осознанное имя источника. Раньше это
+  // бралось буквально и показывалось как есть ("-") — на кругом экране кнопа одинокий дефис
+  // в центре обложки и отдельной строкой ниже выглядел как необъяснимые "точки-артефакты",
+  // пока не сверили с live `curl` сюда же. Приравниваем к "вендор неизвестен", как и пустую
+  // строку — ровно то же самое по сути, другая запись
+  if (strcmp(vendor, "-") == 0) {
+    vendor[0] = '\0';
+  }
   if (vendor[0] != '\0') {
     char* colon = strchr(vendor, ':');
     if (colon) {

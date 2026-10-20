@@ -30,3 +30,10 @@ void applyWebPowerState(bool off);
 // push статуса/трека — см. frame_mirror.h/.cpp за источником данных. Ничего не делает, если
 // ни один клиент не подключён (см. определение в web_control.cpp)
 void webControlBroadcastFrame(const uint8_t* buf, size_t len);
+
+// Рассылает "{"type":"<type>","text":"<text>"}" всем клиентам того же live-WebSocket — тот же
+// приём, что уже есть у "arylic" (raw text field, не структурные поля). Используется
+// mega_link.cpp для чистого проброса MENU:/SETTINGS:/MUTE:/STREAMER: от Mega (KnobControl
+// Фаза 4, см. mega_link.h) сразу по получении, не дожидаясь следующего тика
+// liveWsBroadcastPoll(). Ничего не делает, если ни один клиент не подключён
+void webControlBroadcastText(const char* type, const char* text);

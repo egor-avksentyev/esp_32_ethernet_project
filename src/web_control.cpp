@@ -95,6 +95,7 @@ struct WebAction {
 static const WebAction WEB_ACTIONS[] = {
   {"right", 'R'}, {"left", 'L'}, {"enter", 'E'}, {"mute", 'M'},
   {"power", 'P'}, {"up", 'U'}, {"down", 'D'}, {"set", 'S'},
+  {"exit", 'X'}, // KnobControl Фаза 4 — CMD:X, явный выход из настройки без второго смысла 'E'
 };
 static const uint8_t WEB_ACTIONS_COUNT = sizeof(WEB_ACTIONS) / sizeof(WEB_ACTIONS[0]);
 
@@ -2430,6 +2431,14 @@ static void handleRoot() {
 // объяснение в motor_ws.h/config.h — тот же класс проблемы, только раньше не был замечен на
 // одиночных нажатиях, они реже происходят подряд, чем удержание Up/Down)
 static void executeWebAction(const String& action) {
+  // KnobControl Фаза 4 — "jump:<index>" несёт числовой параметр, не влезает в плоскую таблицу
+  // WEB_ACTIONS[] выше (та — однобуквенные команды без данных). Чистый проброс числа дальше
+  // на Mega как CMD:J<index> — сам ESP32 не знает, что означает конкретный index
+  if (action.startsWith("jump:")) {
+    megaLinkSendJump(action.substring(5).toInt());
+    lastActionSent = 'J';
+    return;
+  }
   for (uint8_t i = 0; i < WEB_ACTIONS_COUNT; i++) {
     if (action == WEB_ACTIONS[i].name) {
       megaLinkSendCommand(WEB_ACTIONS[i].letter);
@@ -2701,6 +2710,17 @@ void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
     return;
   }
   liveWsServer.broadcastBIN(buf, len);
+}
+
+// KnobControl Фаза 4 (см. web_control.h) — тот же jsonEscape(), что уже используется для
+// "arylic"/"track" выше, раз text — произвольная строка от Mega (через mega_link.cpp), не
+// гарантированно без кавычек/спецсимволов
+void webControlBroadcastText(const char* type, const char* text) {
+  if (liveWsServer.connectedClients() == 0) {
+    return;
+  }
+  liveWsServer.broadcastTXT("{\"type\":\"" + String(type) + "\",\"text\":\"" +
+                            jsonEscape(String(text)) + "\"}");
 }
 
 void webControlBegin() {

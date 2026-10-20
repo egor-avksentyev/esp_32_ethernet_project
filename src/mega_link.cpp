@@ -8,7 +8,11 @@
 
 static HardwareSerial MegaSerial(2);
 
-static char lineBuf[32];
+// 32 байт было достаточно для POWER:/TEMP:/VOLT:, но KnobControl Фаза 4 добавила SETTINGS:
+// (8 чисел через двоеточие, до ~31 символа без учёта префикса) — почти впритык к старому
+// размеру, рискуя молча обрезать строку при малейшем будущем расширении формата. Увеличено с
+// запасом, тем же размером, что приёмный буфер на стороне Mega (esp32_link.cpp:lineBuf[64])
+static char lineBuf[64];
 static uint8_t lineLen = 0;
 
 static bool megaPowerKnown = false;
@@ -44,6 +48,17 @@ static void handleMegaLine(char* line) {
   } else if (strncmp(line, "VOLT:", 5) == 0) {
     megaVoltageKnown = true;
     megaVoltage = atoi(line + 5);
+  } else if (strncmp(line, "MENU:", 5) == 0) {
+    // KnobControl Фаза 4 — чистый проброс дальше по Wi-Fi, без своей логики (см. mega_link.h/
+    // esp32_link.h Mega-репозитория за полным форматом каждой телеграммы). ESP32 не парсит
+    // содержимое — тот же приём, что уже есть у "arylic" (raw text field, не структурные поля)
+    webControlBroadcastText("menu", line + 5);
+  } else if (strncmp(line, "SETTINGS:", 9) == 0) {
+    webControlBroadcastText("settings", line + 9);
+  } else if (strncmp(line, "MUTE:", 5) == 0) {
+    webControlBroadcastText("mute", line + 5);
+  } else if (strncmp(line, "STREAMER:", 9) == 0) {
+    webControlBroadcastText("streamer", line + 9);
   }
 }
 
@@ -68,6 +83,13 @@ void megaLinkSendCommand(char actionLetter) {
   MegaMutexGuard g;
   MegaSerial.print("CMD:");
   MegaSerial.print(actionLetter);
+  MegaSerial.print('\n');
+}
+
+void megaLinkSendJump(int index) {
+  MegaMutexGuard g;
+  MegaSerial.print("CMD:J");
+  MegaSerial.print(index);
   MegaSerial.print('\n');
 }
 
