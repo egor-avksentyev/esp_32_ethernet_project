@@ -188,6 +188,20 @@ static bool sendArylicCommand(const String& command) {
   Serial.print("[arylic] команда, соединение ");
   Serial.println(wasConnected ? "переиспользовано" : "новое (хендшейк)");
   client.setInsecure();
+  // Найдено живьём (2026-10-20): WiFiClientSecure's TLS-хендшейк живёт СВОИМ отдельным
+  // таймаутом (setHandshakeTimeout(), не setTimeout()/http.setTimeout() — те только для уже
+  // установленного соединения), и по умолчанию это 120000мс (WiFiClientSecure.cpp). Эта
+  // функция вызывается СИНХРОННО из основного loop()-потока (см. комментарий выше) — если
+  // хендшейк подвиснет (не TCP-отказ, а именно залипание на уровне TLS — правдоподобно при
+  // слабом Wi-Fi), это стопорит вообще всё: WS к кнопу и браузеру, UART-реле к Меге, HTTP —
+  // на целых 2 минуты, без каких-либо признаков жизни устройства. Именно это пользователь
+  // описал как "зависает, помогает только выключить-включить питание". Секунды, не
+  // миллисекунды — тот же API, что setTimeout(uint32_t seconds).
+  // UPDATE (тот же день, живой лог): 2с оказалось МАЛО для этого реального Arylic — рукопожатие
+  // стало проваливаться буквально КАЖДЫЙ раз (видно в логе — "start_ssl_client: -1" на каждой
+  // попытке, с самой первой, на свежей после загрузки куче). Увеличил до 8с — достаточно, чтобы
+  // настоящее рукопожатие успевало завершиться, но всё ещё в разы лучше дефолтных 120с.
+  client.setHandshakeTimeout(8);
 
   HTTPClient http;
   http.setTimeout(2000);
@@ -202,6 +216,14 @@ static bool sendArylicCommand(const String& command) {
   Serial.println(millis() - start);
   String resp = http.getString();
   http.end();
+  // Найдено живьём (2026-10-20) — настоящая причина утечки кучи: HTTPClient::end() зовёт
+  // client->stop() ТОЛЬКО если connected() истинно (framework's HTTPClient.cpp's disconnect()).
+  // Если рукопожатие провалилось — client ещё не "connected", http.end() молча НИЧЕГО не
+  // чистит, а stop_ssl_socket() (framework's ssl_client.cpp, с собственным комментарием "avoid
+  // memory leak if ssl connection attempt failed") просто никогда не вызывается. На каждую
+  // неудачную попытку — реальная утечка mbedTLS-буферов. Зовём stop() сами, безусловно,
+  // независимо от того, что решил сделать http.end().
+  client.stop();
   return httpCode == HTTP_CODE_OK && resp == "OK";
 }
 
@@ -235,9 +257,11 @@ void arylicTriggerFactoryReset() {
   }
   WiFiClientSecure client;
   client.setInsecure();
+  client.setHandshakeTimeout(8); // see sendArylicCommand() above — bumped 2->8, see its comment
   client.setTimeout(3000);
   if (!client.connect(ip, 443)) {
     Serial.println("[arylic] заводской сброс: не удалось подключиться, пропускаю");
+    client.stop(); // see sendArylicCommand() above — don't rely on the destructor for this
     return;
   }
   // Пишем запрос и сразу рвём соединение, не читая ответ — сам Arylic отвечает не сразу
@@ -318,12 +342,14 @@ void arylicProvisionWifiIfInSetupMode(const char* homeSsid, const char* homePass
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setHandshakeTimeout(8); // see sendArylicCommand() above — bumped 2->8, see its comment
   HTTPClient http;
   http.setTimeout(5000);
   http.begin(client, url);
   int httpCode = http.GET();
   String resp = http.getString();
   http.end();
+  client.stop(); // see sendArylicCommand() above — http.end() skips this on a failed handshake
   Serial.print("[arylic] wlanConnectApEx -> код ");
   Serial.print(httpCode);
   Serial.print(", ответ: ");
@@ -582,6 +608,11 @@ static void pollArylicMetadataOnce() {
   // будет видно), не хуже локальной переменной, а если вдруг держит — бесплатный выигрыш
   static WiFiClientSecure client;
   client.setInsecure(); // самоподписанный сертификат Arylic — цепочку не проверяем
+  client.setHandshakeTimeout(8); // see sendArylicCommand() above — bumped 2->8 AND added the
+                                 // explicit stop() below, same day, same live log: 2s made
+                                 // EVERY attempt fail (confirmed in the log, from the very
+                                 // first one on a fresh heap) and leak on each failure via
+                                 // http.end() skipping client.stop() on a failed handshake
 
   HTTPClient http;
   http.setTimeout(2000); // локальная сеть — секунды с запасом на "не отвечает/выключен"
@@ -592,6 +623,7 @@ static void pollArylicMetadataOnce() {
     payload = http.getString();
   }
   http.end();
+  client.stop(); // see sendArylicCommand() above for why this is required, not redundant
 
   // Дебаунс на несколько опросов подряд — раньше даже ОДИН неудачный запрос (разовый WiFi/TLS-
   // дребезг, а не настоящая потеря связи) сразу считался "Arylic пропал", слал Mega PLAY:0 и

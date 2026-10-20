@@ -13,8 +13,65 @@
 // работа (веб-управление/метадата) в этом режиме не имеет смысла, реальной сети ещё нет
 static bool provisioning = false;
 
+// Диагностика реального зависания (2026-10-20): пользователь подтвердил живым тестом на
+// Меге (энкодер продолжает крутить моторы сам по себе), что виснет именно этот ESP32 целиком —
+// ни веб-морда, ни WS к кнобу, ни UART к Меге не отвечают. Фикс TLS-хендшейка Arylic
+// (setHandshakeTimeout) это НЕ исправил — значит, зависает где-то ещё в этом же loop().
+//
+// Вместо гадания дальше по коду — два прибора разом:
+//  1. "Канарейка" — отдельная лёгкая FreeRTOS-задача, которая раз в секунду проверяет, сколько
+//     времени текущий шаг loop() уже выполняется, и кричит в Serial СРАЗУ, как только это
+//     подозрительно долго — НЕ дожидаясь, пока шаг наконец завершится (если он вообще
+//     когда-нибудь завершится — настоящее зависание именно и означает, что не завершится).
+//     Это единственный способ поймать истинный "висит вечно", не просто "долго, но живой".
+//  2. Свободная куча раз в 10с — "работает немного, потом виснет" похоже на утечку/
+//     фрагментацию кучи, эта метрика покажет её вживую, если дело в этом.
+constexpr unsigned long kStuckWarnMs = 2000;
+constexpr unsigned long kHeapLogIntervalMs = 10000;
+unsigned long gLastHeapLogMs = 0;
+volatile unsigned long gStepStartMs = 0;
+const char *volatile gCurrentStep = "setup";
+bool gStuckWarned = false;
+
+void watchdogTaskFn(void *) {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    unsigned long stuckFor = millis() - gStepStartMs;
+    if (stuckFor > kStuckWarnMs) {
+      if (!gStuckWarned) {
+        gStuckWarned = true;
+        Serial.printf("[watchdog] STUCK in step '%s' for %lums and counting (uptime %lus)\n",
+                      gCurrentStep, stuckFor, millis() / 1000);
+      }
+    } else {
+      gStuckWarned = false;
+    }
+  }
+}
+
+template <typename Fn> void timedStep(const char *name, Fn fn) {
+  gCurrentStep = name;
+  gStepStartMs = millis();
+  fn();
+  unsigned long elapsed = millis() - gStepStartMs;
+  if (elapsed >= 150) {
+    Serial.printf("[loop] slow step: %s took %lums (uptime %lus)\n", name, elapsed,
+                  millis() / 1000);
+  }
+}
+
+void logHeapIfDue() {
+  unsigned long now = millis();
+  if (now - gLastHeapLogMs < kHeapLogIntervalMs) return;
+  gLastHeapLogMs = now;
+  Serial.printf("[heap] free=%u minFree=%u maxAlloc=%u uptime=%lus\n", ESP.getFreeHeap(),
+                ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), now / 1000);
+}
+
 void setup() {
   Serial.begin(115200);
+  gStepStartMs = millis();
+  xTaskCreate(watchdogTaskFn, "hangwatch", 2048, nullptr, 1, nullptr);
   megaLinkBegin();
 
   if (wifiSetupBegin()) {
@@ -39,9 +96,10 @@ void loop() {
     wifiProvisioningPoll();
     return;
   }
-  wifiSetupMaintain();
-  webControlPoll();
-  megaLinkPoll();
-  motorWsPoll();
-  frameMirrorPoll();
+  timedStep("wifiSetupMaintain", wifiSetupMaintain);
+  timedStep("webControlPoll", webControlPoll);
+  timedStep("megaLinkPoll", megaLinkPoll);
+  timedStep("motorWsPoll", motorWsPoll);
+  timedStep("frameMirrorPoll", frameMirrorPoll);
+  logHeapIfDue();
 }

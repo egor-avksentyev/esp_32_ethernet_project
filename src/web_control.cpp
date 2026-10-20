@@ -7,6 +7,9 @@
 #include <WiFi.h>
 #include <WebSocketsServer.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
 static WebServer server(WEB_SERVER_PORT);
 
@@ -15,6 +18,145 @@ static WebServer server(WEB_SERVER_PORT);
 // на практике (одна открытая вкладка), но WebSocketsServer сам поддерживает несколько —
 // рассылка широковещательная, лишнего кода под общий случай не потребовалось
 static WebSocketsServer liveWsServer(LIVE_WS_PORT);
+
+// Найдено живьём (2026-10-20): WEBSOCKETS_TCP_TIMEOUT (platformio.ini, 800мс) ограничивает
+// только ПАУЗУ МЕЖДУ успешными частичными записями внутри WebSockets::write() — не суммарное
+// время всей передачи. Если TCP-приём у клиента (чаще всего — у кноба, с его уже
+// задокументированной нестабильностью Wi-Fi) принимает данные мелкими порциями, каждая из
+// которых укладывается в 800мс, таймер каждый раз сбрасывается — и реальный лог показал
+// `megaLinkPoll` STUCK на 16029мс суммарно, хотя "таймаут" формально не превышался ни разу.
+// `megaLinkPoll()`/`frameMirrorPoll()` звали `webControlBroadcastText()`/`webControlBroadcastFrame()`
+// СИНХРОННО, инлайново — то есть именно приём UART от Меги (и OLED-зеркала) стоял и ждал,
+// пока медленный клиент наконец примет свою порцию. Короткий таймаут здесь принципиально не
+// мог это вылечить — нужно, чтобы отправка клиентам вообще не делила поток с чтением UART.
+//
+// Фикс — тот же архитектурный приём, что уже сработал в KnobControl (esp32_link.cpp,
+// gWsSendQueue/wsTaskFn): `liveWsServer` теперь ПОЛНОСТЬЮ принадлежит одной выделенной задаче
+// (liveWsTaskFn ниже) — и .loop(), и сама рассылка. Producer-функции (webControlBroadcastText/
+// webControlBroadcastFrame/liveWsBroadcastPoll, всё ещё вызываемые из основного loop()) только
+// кладут готовое сообщение в очередь (enqueueLiveWs(), без блокировки) и сразу возвращаются —
+// сколько бы ни "тупил" конкретный клиент, чтение UART от Меги это больше не видит.
+struct LiveWsOutMsg {
+  bool binary;
+  uint16_t len;
+  uint8_t* data; // heap, выделяется в enqueueLiveWs(), освобождается в liveWsTaskFn()
+};
+constexpr int kLiveWsQueueLen = 16; // ~16КБ худший случай (самое большое сообщение — кадр
+                                     // OLED-зеркала, 1026 байт) — не жалко, запас против всплеска
+static QueueHandle_t gLiveWsQueue = nullptr;
+
+static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
+  if (!gLiveWsQueue || len == 0) {
+    return;
+  }
+  uint8_t* copy = (uint8_t*)malloc(len);
+  if (!copy) {
+    Serial.println("[web] live WS: malloc failed, dropping message");
+    return;
+  }
+  memcpy(copy, src, len);
+  LiveWsOutMsg msg{binary, (uint16_t)len, copy};
+  if (xQueueSend(gLiveWsQueue, &msg, 0) != pdTRUE) {
+    free(copy);
+    // Найдено живьём (2026-10-20): пока liveWsTaskFn сам застрял на одном медленном клиенте,
+    // очередь переполняется на КАЖДОЙ попытке — без троттлинга это десятки Serial.println() в
+    // секунду. Считаем молча, печатаем раз в 2с одной строкой с накопленным счётчиком
+    static unsigned long lastDropLogMs = 0;
+    static unsigned long dropsSinceLog = 0;
+    dropsSinceLog++;
+    unsigned long now = millis();
+    if (now - lastDropLogMs >= 2000) {
+      Serial.printf("[web] live WS queue full, dropped %lu message(s) in last %lums\n",
+                    dropsSinceLog, now - lastDropLogMs);
+      lastDropLogMs = now;
+      dropsSinceLog = 0;
+    }
+  }
+}
+
+// Диагностика специально для liveWsTaskFn (добавлено 2026-10-20): лог с main.cpp подтвердил,
+// что megaLinkPoll/frameMirrorPoll больше НЕ подвисают, когда клиент тормозит — но пользователь
+// всё равно поймал полное зависание (нужен power-cycle) в том же тесте, где лог показал
+// непрерывный спам "queue full" 20+ секунд подряд без восстановления. Это сильно похоже на то,
+// что теперь застревает сама liveWsTaskFn (внутри WebSockets::write() к одному "медленно
+// капающему" клиенту — см. комментарий у LiveWsOutMsg выше за тем, почему короткий таймаут это
+// не ловит) — но прямого доказательства ещё нет, лог обрывается раньше, чем виден исход. Тот
+// же приём "канарейки", что уже есть в main.cpp: отдельная задача кричит в Serial ПРЯМО ВО
+// ВРЕМЯ подвисания, не дожидаясь, пока шаг наконец завершится
+static volatile unsigned long gWsStepStartMs = 0;
+static const char* volatile gWsCurrentStep = "idle";
+
+static void liveWsCanaryTaskFn(void*) {
+  bool warned = false;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    unsigned long stuckFor = millis() - gWsStepStartMs;
+    if (stuckFor > 2000) {
+      if (!warned) {
+        warned = true;
+        Serial.printf("[ws-watchdog] liveWsTaskFn STUCK in '%s' for %lums and counting\n",
+                      gWsCurrentStep, stuckFor);
+      }
+    } else {
+      warned = false;
+    }
+  }
+}
+
+// Найдено живьём (2026-10-20, через ту самую канарейку выше): `[ws-watchdog] liveWsTaskFn
+// STUCK in 'broadcastTXT'` реально срабатывал (2-2.5с на эпизод) — подтверждает, что
+// `broadcastTXT()`/`broadcastBIN()` (библиотека гоняет их по ВСЕМ клиентам одним вызовом,
+// см. WebSocketsServer.cpp) действительно застревают на одном "капающем" клиенте (почти
+// наверняка кноб — см. его уже задокументированную нестабильность Wi-Fi), и что КАЖДЫЙ
+// следующий цикл рассылки застревает на НЁМ ЖЕ СНОВА — heartbeat (enableHeartbeat выше)
+// клиента не выгоняет, потому что сам процесс проверки pong происходит внутри .loop(), а пока
+// задача сидит внутри write(), до .loop() дело просто не доходит. В предыдущей версии это и
+// объясняло бесконечный спам "queue full" — задача не успевала выгрести очередь быстрее, чем
+// та наполнялась от Меги/OLED-зеркала.
+//
+// Фикс — не просто ждать, а бить тревогу: раз сам per-client write() неостановим снаружи
+// (библиотека не даёт прервать его на середине), единственный способ ограничить урон — не
+// позволять ОДНОМУ и тому же клиенту тормозить КАЖДЫЙ следующий цикл рассылки. Переходим с
+// broadcastTXT/broadcastBIN (один вызов на всех клиентов разом) на ручной обход по каждому
+// клиенту (sendTXT/sendBIN, WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) с
+// замером времени: если ОДНА отправка одному клиенту заняла дольше kSlowClientKickMs — этот
+// клиент отключается принудительно (`disconnect(num)`) сразу же, не дожидаясь следующего
+// heartbeat-цикла. Безопасно звать disconnect() отсюда же — это единственный поток, который
+// вообще трогает liveWsServer после setup()
+constexpr unsigned long kSlowClientKickMs = 1500;
+
+// Единственное место, которое трогает liveWsServer после setup() — см. комментарий у
+// LiveWsOutMsg выше. Один проход .loop() (приём/рукопожатия/heartbeat), затем вся очередь
+// целиком (без ограничения "одно сообщение за тик", в отличие от KnobControl — здесь это
+// именно рассылка, не команда с ретраями, достаточно отправить и забыть)
+static void liveWsTaskFn(void*) {
+  for (;;) {
+    gWsCurrentStep = "liveWsServer.loop()";
+    gWsStepStartMs = millis();
+    liveWsServer.loop();
+    LiveWsOutMsg msg;
+    while (xQueueReceive(gLiveWsQueue, &msg, 0) == pdTRUE) {
+      for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
+        if (!liveWsServer.clientIsConnected(num)) {
+          continue;
+        }
+        gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
+        gWsStepStartMs = millis();
+        bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
+                              : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
+        unsigned long elapsed = millis() - gWsStepStartMs;
+        if (elapsed > kSlowClientKickMs) {
+          Serial.printf("[web] live WS client #%u slow (%lums%s) — kicking\n", num, elapsed,
+                        ok ? "" : ", send failed");
+          liveWsServer.disconnect(num);
+        }
+      }
+      free(msg.data);
+    }
+    gWsCurrentStep = "idle";
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
 
 // Кроме рассылки СЕРВЕРОМ (push статуса/трека), этот же канал принимает "cmd:<action>" от
 // клиента — одиночные кнопки (left/right/enter/mute/power/set), см. executeWebAction() и
@@ -2461,6 +2603,13 @@ static void handleCmd() {
   server.send(204);
 }
 
+// С переносом liveWsServer.loop() в liveWsTaskFn (см. выше) этот колбэк теперь вызывается с
+// ДРУГОГО потока (core 0), не из основного loop() — executeWebAction() ниже пишет
+// lastActionSent/webPoweredOff/pausedByPowerOff, которые заодно читает/пишет и handleCmd() с
+// основного потока (HTTP на /cmd). Реальной гонки на практике не ожидается (оба пути — это
+// живое нажатие кнопки человеком, секунды между событиями), а сами MegaSerial-записи уже
+// защищены megaMutex (mega_link.cpp) независимо от потока-вызывающего — тот же принцип, что уже
+// применяется к arylicPollTask (тоже пишет в MegaSerial со своего потока)
 static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
   if (type != WStype_TEXT) {
     return;
@@ -2689,7 +2838,6 @@ static void handleFactoryReset() {
 // (см. connectLiveWs() в PAGE_HTML) — сами JSON/текст идентичны тому, что вернул бы
 // соответствующий HTTP-эндпоинт
 static void liveWsBroadcastPoll() {
-  liveWsServer.loop();
   static unsigned long lastBroadcast = 0;
   if (liveWsServer.connectedClients() == 0) {
     return; // никто не слушает — нечего считать/слать
@@ -2698,29 +2846,26 @@ static void liveWsBroadcastPoll() {
     return;
   }
   lastBroadcast = millis();
-  liveWsServer.broadcastTXT("{\"type\":\"status\",\"data\":" + buildStatusJson() + "}");
-  liveWsServer.broadcastTXT("{\"type\":\"track\",\"data\":" + buildTrackJson() + "}");
-  liveWsServer.broadcastTXT("{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}");
+  String status = "{\"type\":\"status\",\"data\":" + buildStatusJson() + "}";
+  String track = "{\"type\":\"track\",\"data\":" + buildTrackJson() + "}";
+  String arylic = "{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}";
+  enqueueLiveWs(false, (const uint8_t*)status.c_str(), status.length());
+  enqueueLiveWs(false, (const uint8_t*)track.c_str(), track.length());
+  enqueueLiveWs(false, (const uint8_t*)arylic.c_str(), arylic.length());
 }
 
 // Сырой бинарный WS-фрейм, не JSON: клиент отличает его от текстовых push-сообщений выше по типу (ArrayBuffer vs
 // строка, см. connectLiveWs() в PAGE_HTML), поэтому обёртка не нужна вообще
 void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
-  if (liveWsServer.connectedClients() == 0) {
-    return;
-  }
-  liveWsServer.broadcastBIN(buf, len);
+  enqueueLiveWs(true, buf, len);
 }
 
 // KnobControl Фаза 4 (см. web_control.h) — тот же jsonEscape(), что уже используется для
 // "arylic"/"track" выше, раз text — произвольная строка от Mega (через mega_link.cpp), не
 // гарантированно без кавычек/спецсимволов
 void webControlBroadcastText(const char* type, const char* text) {
-  if (liveWsServer.connectedClients() == 0) {
-    return;
-  }
-  liveWsServer.broadcastTXT("{\"type\":\"" + String(type) + "\",\"text\":\"" +
-                            jsonEscape(String(text)) + "\"}");
+  String msg = "{\"type\":\"" + String(type) + "\",\"text\":\"" + jsonEscape(String(text)) + "\"}";
+  enqueueLiveWs(false, (const uint8_t*)msg.c_str(), msg.length());
 }
 
 void webControlBegin() {
@@ -2738,6 +2883,19 @@ void webControlBegin() {
   server.begin();
   liveWsServer.begin();
   liveWsServer.onEvent(handleLiveWsEvent);
+  // Найдено живьём (2026-10-20) — см. motor_ws.cpp's motorWsBegin() за полным объяснением.
+  // Этот сервер особенно уязвим: он САМ broadcastTXT()/broadcastBIN() каждые ~500мс и на
+  // каждый зеркалируемый кадр OLED с Меги (liveWsBroadcastPoll()/webControlBroadcastFrame()
+  // ниже) — если хоть один клиент в _clients[] "призрак" (сокет не шлёт FIN, но и не читает),
+  // КАЖДЫЙ такой вызов блокируется на нём до 5с, и так бесконечно, пока клиента не выгонят —
+  // ровно это выглядело как "всё зависло насовсем: ни веб-морда, ни кноб, ни Мега по UART".
+  liveWsServer.enableHeartbeat(15000, 3000, 2);
+
+  gLiveWsQueue = xQueueCreate(kLiveWsQueueLen, sizeof(LiveWsOutMsg));
+  // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные
+  // фоновые сетевые задачи; loop() (UART к Меге, HTTP-сервер) остаётся на core 1 (ARDUINO_RUNNING_CORE)
+  xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 6144, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, nullptr, 1, nullptr, 0);
 
   Serial.print("[web] веб-морда поднята, зайди на http://");
   Serial.print(WiFi.localIP());

@@ -58,6 +58,14 @@ static void handleMotorWsEvent(uint8_t num, WStype_t type, uint8_t* payload, siz
 void motorWsBegin() {
   motorWsServer.begin();
   motorWsServer.onEvent(handleMotorWsEvent);
+  // Найдено живьём (2026-10-20): без heartbeat библиотека НИКОГДА не замечает клиента, чей TCP-
+  // сокет перестал реально отвечать, но ещё не прислал FIN/RST (телефон свернул вкладку, Wi-Fi
+  // увёл роуминг и т.п.) — тот сидит в _clients[] вечно, и КАЖДАЯ последующая передача этому
+  // клиенту блокирует весь однопоточный loop() (см. web_control.cpp) до WEBSOCKETS_TCP_TIMEOUT
+  // (5с). Этот сервер сам клиентам ничего не шлёт регулярно (только принимает up/down), но
+  // держит соединение открытым столько же времени — тот же риск. 15с пинг / 3с ждать pong / 2
+  // пропуска подряд — отключит реально мёртвого клиента, а не экономит на здоровых.
+  motorWsServer.enableHeartbeat(15000, 3000, 2);
 }
 
 void motorWsPoll() {
