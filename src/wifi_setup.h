@@ -39,3 +39,31 @@ void wifiSaveCredentials(const char* ssid, const char* password);
 // После вызова следующий wifiSetupBegin() (после ESP.restart()) вернёт false — устройство
 // само уйдёт в режим настройки
 void wifiForgetCredentials();
+
+// Счётчик поколения кредов (ARCHITECTURE.md "Заводской сброс тоже должен сбрасывать кноп") —
+// растёт на 1 при каждом wifiSaveCredentials()/wifiForgetCredentials(). KnobControl хранит у
+// себя последний известный gen и сверяет его при каждом выходе на связь (через /wifi-creds и
+// через поле "wifiCredGen" в JSON-статусе WS82) — расхождение само по себе и есть сигнал "пароль
+// сменился или был заводской сброс, нужно пере-пэириться", без отдельного явного события
+unsigned long wifiCredGen();
+
+// Текущие домашние ssid/pass "как есть", для GET /wifi-creds (web_control.cpp) — тот же NVS,
+// что wifiSetupBegin() уже читает сам, просто с публичным доступом наружу для кнопа
+String wifiSavedSsid();
+String wifiSavedPassword();
+
+// Найдено живьём (2026-10-21): пользователь надёжно воспроизвёл — после долгой непрерывной
+// работы (куча успевает фрагментироваться, видно по падению maxAlloc в [heap]-логе) заводской
+// сброс Arylic (arylicTriggerFactoryReset(), TLS-хендшейк) начинал молча проваливаться на
+// client.connect(); сразу после ручного ребута companion'а тот же сброс отрабатывал каждый раз.
+// Вместо того чтобы гоняться за источниками фрагментации по всему коду — сам сброс теперь
+// разбит на два перезапуска: handleFactoryReset() (web_control.cpp) только ставит этот флаг и
+// сразу уходит в ESP.restart() (гарантированно чистая куча на следующей загрузке); main.cpp
+// ловит флаг в начале setup(), ДО обычного wifiSetupBegin(), подключается ещё валидными (ещё не
+// стёртыми) кредами и дёргает Arylic именно оттуда — и только потом стирает Wi-Fi и уходит в
+// обычный режим настройки. wifiMarkFactoryResetPending()/wifiConsumeFactoryResetPending() — не
+// пара сеттер/геттер: Consume читает и сразу сбрасывает флаг за один вызов, чтобы случайный
+// краш где-то в середине этой последовательности не заставил её повторяться в бесконечном цикле
+// при каждой следующей загрузке.
+void wifiMarkFactoryResetPending();
+bool wifiConsumeFactoryResetPending();

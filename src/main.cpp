@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <ESPmDNS.h>
 #include "config.h"
 #include "wifi_setup.h"
@@ -68,11 +69,51 @@ void logHeapIfDue() {
                 ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), now / 1000);
 }
 
+// Второй шаг заводского сброса (см. handleFactoryReset() в web_control.cpp за полным
+// объяснением, почему сброс вообще разбит на два перезапуска — вкратце: гарантированно чистая,
+// незафрагментированная куча для TLS-хендшейка к Arylic). Подключаемся ЕЩЁ валидными (ещё не
+// стёртыми) сохранёнными кредами — минимально, только то, что нужно для mDNS + HTTPS до Arylic,
+// без поднятия обычного стека сервисов (веб-сервер/WS/опрос) — незачем тратить на них только что
+// освобождённую кучу прямо перед тем, как всё равно всё стереть и перезагрузиться ещё раз.
+static void runPendingFactoryReset() {
+  Serial.println("[reset] второй шаг заводского сброса — подключаюсь ещё валидными кредами");
+  String ssid = wifiSavedSsid();
+  String password = wifiSavedPassword();
+  if (ssid.length() > 0) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), password.c_str());
+    unsigned long start = millis();
+    while (millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+      if (WiFi.status() == WL_CONNECTED) break;
+      delay(100);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("[reset] подключился — кидаю заводской сброс на Arylic со свежей кучей");
+      MDNS.begin("esp32-audio-webctl");
+      arylicMetadataInitMutex(); // resolveArylicIp() нужен мьютекс, сам опрос не поднимаем
+      arylicTriggerFactoryReset();
+    } else {
+      Serial.println("[reset] не подключился к сохранённой сети — Arylic сбросить не смог, пропускаю");
+    }
+  } else {
+    Serial.println("[reset] сохранённой сети не было — Arylic сбросить не смог, пропускаю");
+  }
+  Serial.println("[reset] стираю Wi-Fi и ухожу в режим настройки");
+  wifiForgetCredentials();
+  delay(1000); // тот же запас, что был у прежней однопроходной версии — перед тем как рвать сеть
+  ESP.restart();
+}
+
 void setup() {
   Serial.begin(115200);
   gStepStartMs = millis();
   xTaskCreate(watchdogTaskFn, "hangwatch", 2048, nullptr, 1, nullptr);
   megaLinkBegin();
+
+  if (wifiConsumeFactoryResetPending()) {
+    runPendingFactoryReset(); // не возвращается — всегда заканчивается ESP.restart()
+    return;
+  }
 
   if (wifiSetupBegin()) {
     // Нужен для резолва ARYLIC_MDNS_HOSTNAME в arylic_metadata.cpp (MDNS.queryHost()) —

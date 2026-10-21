@@ -45,9 +45,25 @@ constexpr int kLiveWsQueueLen = 16; // ~16КБ худший случай (сам
                                      // OLED-зеркала, 1026 байт) — не жалко, запас против всплеска
 static QueueHandle_t gLiveWsQueue = nullptr;
 
+// Найдено живьём (2026-10-21): даже после того, как кноб сам отказался от бинарных кадров
+// (gClientWantsBinary выше), очередь всё равно забивалась и дёргала ДРУГОГО клиента (который
+// зеркало не отключал) — Mega перерисовывает экран почти непрерывно (~20мс/кадр даже в
+// простое, см. frame_mirror.cpp), и frameMirrorPoll() enqueue'ил КАЖДЫЙ новый кадр, не
+// спрашивая, успели ли отправить предыдущий. Раз это "живое зеркало", а не точный протокол —
+// устаревший кадр в очереди бесполезен, важен только самый свежий. Держим не больше ОДНОГО
+// бинарного сообщения в очереди разом: пока предыдущее не отправлено всем клиентам (сброс в
+// liveWsTaskFn), новые кадры просто отбрасываются здесь же, не доходя до xQueueSend — это и
+// не даёт десяткам кадров скапливаться в очереди впереди куда более важных текстовых
+// MENU:/SETTINGS:, и ограничивает суммарный бинарный трафик сам по себе, независимо от того,
+// какой конкретно клиент сейчас медленный.
+static volatile bool gBinaryFramePending = false;
+
 static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
   if (!gLiveWsQueue || len == 0) {
     return;
+  }
+  if (binary && gBinaryFramePending) {
+    return; // a newer frame will replace this one soon enough — see gBinaryFramePending above
   }
   uint8_t* copy = (uint8_t*)malloc(len);
   if (!copy) {
@@ -56,7 +72,11 @@ static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
   }
   memcpy(copy, src, len);
   LiveWsOutMsg msg{binary, (uint16_t)len, copy};
-  if (xQueueSend(gLiveWsQueue, &msg, 0) != pdTRUE) {
+  if (xQueueSend(gLiveWsQueue, &msg, 0) == pdTRUE) {
+    if (binary) {
+      gBinaryFramePending = true; // cleared by liveWsTaskFn once this message is fully handled
+    }
+  } else {
     free(copy);
     // Найдено живьём (2026-10-20): пока liveWsTaskFn сам застрял на одном медленном клиенте,
     // очередь переполняется на КАЖДОЙ попытке — без троттлинга это десятки Serial.println() в
@@ -119,11 +139,34 @@ static void liveWsCanaryTaskFn(void*) {
 // позволять ОДНОМУ и тому же клиенту тормозить КАЖДЫЙ следующий цикл рассылки. Переходим с
 // broadcastTXT/broadcastBIN (один вызов на всех клиентов разом) на ручной обход по каждому
 // клиенту (sendTXT/sendBIN, WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) с
-// замером времени: если ОДНА отправка одному клиенту заняла дольше kSlowClientKickMs — этот
-// клиент отключается принудительно (`disconnect(num)`) сразу же, не дожидаясь следующего
-// heartbeat-цикла. Безопасно звать disconnect() отсюда же — это единственный поток, который
-// вообще трогает liveWsServer после setup()
+// замером времени — см. gSlowStreak ниже за тем, что именно считается "клиент безнадёжен".
+// Безопасно звать disconnect() отсюда же — это единственный поток, который вообще трогает
+// liveWsServer после setup()
 constexpr unsigned long kSlowClientKickMs = 1500;
+
+// Найдено живьём (2026-10-21, кноб): кикать клиента по ОДНОЙ медленной отправке — перебор на
+// слабом Wi-Fi (RSSI -75...-91dBm у кноба, см. project memory) — там отдельные записи время от
+// времени И ТАК занимают 1.5-2.5с просто из-за ретрансмиссий на плохом сигнале, это нормальное
+// временное явление, не означает "клиент мёртв". Кик по первому же такому случаю рвал рабочее
+// соединение ради самовосстанавливающейся заминки — ровно то же рассуждение, что уже применено
+// к нестабильному опросу Arylic (ARYLIC_UNREACHABLE_STREAK, см. arylic_metadata.cpp/project
+// memory "relay_flicker_debounce") — там тоже единичный сбой не повод действовать, три подряд —
+// повод. Тот же приём здесь: считаем подряд идущие медленные отправки на каждого клиента
+// отдельно, кикаем только когда достигнут kSlowStreakKick, сбрасываем счётчик на любой
+// достаточно быстрой отправке.
+constexpr uint8_t kSlowStreakKick = 3;
+static uint8_t gSlowStreak[WEBSOCKETS_SERVER_CLIENT_MAX] = {0};
+
+// Найдено живьём (2026-10-21, через добавленное логирование CONNECTED/DISCONNECTED выше и
+// "live WS queue full, dropped N message(s)"): настоящая причина разрывов у кноба — не сигнал
+// и не частота его собственных "cmd:", а то, что КАЖДЫЙ клиент этого сокета безусловно получает
+// ещё и попиксельное зеркало OLED-экрана (frame_mirror.cpp, кадры по 1026 байт, льются с Меги
+// почти непрерывно, пока та что-то анимирует/перерисовывает — то есть и в простое тоже). Кноб
+// эти кадры вообще не умеет принимать (`WStype_BIN` в его esp32_link.cpp не обрабатывается) —
+// это чистый лишний объём именно для него, независимо от RSSI. По умолчанию — true (обратная
+// совместимость с веб-страницей, которая зеркало и показывает), кноб сам говорит "mirror:off"
+// сразу после коннекта (см. handleLiveWsEvent ниже и esp32_link.cpp на стороне кноба).
+static bool gClientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX];
 
 // Единственное место, которое трогает liveWsServer после setup() — см. комментарий у
 // LiveWsOutMsg выше. Один проход .loop() (приём/рукопожатия/heartbeat), затем вся очередь
@@ -140,16 +183,32 @@ static void liveWsTaskFn(void*) {
         if (!liveWsServer.clientIsConnected(num)) {
           continue;
         }
+        if (msg.binary && !gClientWantsBinary[num]) {
+          continue; // this client opted out of the OLED mirror — see its own comment above
+        }
         gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
         gWsStepStartMs = millis();
         bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
                               : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
         unsigned long elapsed = millis() - gWsStepStartMs;
         if (elapsed > kSlowClientKickMs) {
-          Serial.printf("[web] live WS client #%u slow (%lums%s) — kicking\n", num, elapsed,
-                        ok ? "" : ", send failed");
-          liveWsServer.disconnect(num);
+          gSlowStreak[num]++;
+          if (gSlowStreak[num] >= kSlowStreakKick) {
+            Serial.printf("[web] live WS client #%u slow %u times in a row (latest %lums%s) — "
+                          "kicking\n",
+                          num, gSlowStreak[num], elapsed, ok ? "" : ", send failed");
+            liveWsServer.disconnect(num);
+            gSlowStreak[num] = 0;
+          } else {
+            Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u)\n", num, elapsed,
+                          ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick);
+          }
+        } else {
+          gSlowStreak[num] = 0;
         }
+      }
+      if (msg.binary) {
+        gBinaryFramePending = false; // see enqueueLiveWs() — a newer frame can queue again now
       }
       free(msg.data);
     }
@@ -1311,10 +1370,22 @@ static const char PAGE_HTML[] PROGMEM =
   "if(!I18N[saved])saved='uk';"
   "document.getElementById('langSelect').value=saved;"
   "applyLanguage(saved)})();"
+  // KnobControl Фаза 8 — делает сброс с кноба равноценным сбросу с вебморды для Spotify:
+  // ESP32 сам токен Spotify никогда не хранил (см. factoryReset()'s комментарий ниже), так что
+  // с кноба в принципе нечего "разлогинивать" напрямую — а wifiCredGen сервер уже и так шлёт
+  // в каждом статусе. Если увиденное значение отличается от того, что эта вкладка запомнила в
+  // прошлый раз — где-то произошёл сброс (неважно откуда: кноб, вебморда, повторный сброс пока
+  // вкладка была закрыта) — значит пора разлогиниться и здесь тоже. null-проверка — чтобы не
+  // разлогинивать самую первую вкладку, которая вообще никогда ничего не запоминала.
+  "function checkWifiCredGenReset(gen){"
+  "if(gen===undefined||gen===null)return;"
+  "let seen=null;try{seen=localStorage.getItem('wifiCredGen')}catch(e){}"
+  "if(seen!==null&&parseInt(seen,10)!==gen)spLogout();"
+  "try{localStorage.setItem('wifiCredGen',String(gen))}catch(e){}}"
   // applyStatusData() отдельно от poll() — тем же телом пользуется постоянный push по
   // WebSocket (см. connectLiveWs() ниже), poll() остаётся HTTP-фолбэком на случай, если он
   // недоступен (liveDataFresh() гасит повторный HTTP-опрос, пока push реально приходит)
-  "function applyStatusData(j){lastStatus=j;renderStatus()}"
+  "function applyStatusData(j){lastStatus=j;checkWifiCredGenReset(j.wifiCredGen);renderStatus()}"
   "function poll(){fetch('/status').then(r=>r.json()).then(applyStatusData)}"
   "setInterval(function(){if(!liveDataFresh())poll()},1500);poll();"
   "function applyArylicIp(){"
@@ -2581,11 +2652,46 @@ static void executeWebAction(const String& action) {
     lastActionSent = 'J';
     return;
   }
+
+  // Найдено живьём (2026-10-21) — необязательный суффикс "<name>:<count>" (см. knob'овский
+  // esp32LinkSendCmdRepeat()): один быстрый оборот энкодера на кнобе раньше слал ОДНО WS-
+  // сообщение на каждый физический тик (десятки/сек при быстром вращении) — на слабом Wi-Fi
+  // этот поток забивал тот же сокет настолько, что собственные исходящие записи сервера туда
+  // же (MENU:/SETTINGS: push, см. mega_link.cpp) не укладывались в kSlowClientKickMs и клиента
+  // принудительно отключало. Теперь кноб пакует N одинаковых тиков в одно сообщение
+  // ("cmd:up:5"), а здесь это просто разворачивается обратно в N отдельных вызовов
+  // megaLinkSendCommand() — протокол UART к Меге не меняется вообще, только то, сколько раз
+  // подряд он тут вызван. Любое другое действие (enter/mute/power/set/...) просто никогда не
+  // придёт с таким суффиксом — count==1 для них не отличается от прежнего поведения.
+  String base = action;
+  long count = 1;
+  int colonIdx = action.lastIndexOf(':');
+  if (colonIdx >= 0) {
+    String suffix = action.substring(colonIdx + 1);
+    bool allDigits = suffix.length() > 0;
+    for (unsigned int i = 0; i < suffix.length(); i++) {
+      if (!isDigit(suffix[i])) {
+        allDigits = false;
+        break;
+      }
+    }
+    if (allDigits) {
+      base = action.substring(0, colonIdx);
+      count = suffix.toInt();
+    }
+  }
+  // Защитный потолок — ни один настоящий оборот энкодера за один onRotate() близко не
+  // подойдёт к этому числу; это именно против испорченного/обрезанного на слабом сигнале
+  // пакета, который случайно распарсился бы как валидный, но с огромным count
+  count = constrain(count, 1L, 50L);
+
   for (uint8_t i = 0; i < WEB_ACTIONS_COUNT; i++) {
-    if (action == WEB_ACTIONS[i].name) {
-      megaLinkSendCommand(WEB_ACTIONS[i].letter);
+    if (base == WEB_ACTIONS[i].name) {
+      for (long n = 0; n < count; n++) {
+        megaLinkSendCommand(WEB_ACTIONS[i].letter);
+      }
       lastActionSent = WEB_ACTIONS[i].letter;
-      if (action == "power") {
+      if (base == "power") {
         // Оптимистично, сразу по клику — настоящее подтверждение от Mega (POWER: по UART,
         // см. applyWebPowerState()) придёт чуть позже и совпадёт с этим же значением
         // (applyWebPowerState() не делает ничего повторно, если оно совпадает)
@@ -2611,7 +2717,34 @@ static void handleCmd() {
 // защищены megaMutex (mega_link.cpp) независимо от потока-вызывающего — тот же принцип, что уже
 // применяется к arylicPollTask (тоже пишет в MegaSerial со своего потока)
 static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  // Диагностика (2026-10-21) — до сих пор НИЧЕГО не печаталось о CONNECTED/DISCONNECTED на
+  // этом сокете: весь разбор "кноб то рвётся, то нет" до сих пор шёл только по логу самого
+  // кноба (который видит лишь факт обрыва, не причину на этой стороне). Теперь здесь видно,
+  // какой из уже существующих триггеров реально срабатывает — наш kSlowStreakKick (у него уже
+  // есть свой printf выше, в liveWsTaskFn) печатает ДО этого disconnect-события, либо
+  // disconnect приходит БЕЗ такого printf — тогда это либо enableHeartbeat() (сама библиотека
+  // отключает молча), либо настоящий обрыв TCP со стороны кноба.
+  if (type == WStype_CONNECTED) {
+    Serial.printf("[web] live WS client #%u connected\n", num);
+    // Default to true (web page wants the OLED mirror) — see gClientWantsBinary's own comment.
+    // Reset on every fresh connect, not just once, so a slot a knob just vacated doesn't leave
+    // a stale "false" behind for whatever reconnects into the same client number next.
+    gClientWantsBinary[num] = true;
+    return;
+  }
+  if (type == WStype_DISCONNECTED) {
+    Serial.printf("[web] live WS client #%u disconnected\n", num);
+    return;
+  }
   if (type != WStype_TEXT) {
+    return;
+  }
+  // "mirror:off" — см. gClientWantsBinary выше. Не под префиксом "cmd:" (разбирается ДО него
+  // — простой отдельный протокольный сигнал, не команда кнопки), шлётся кнобом один раз сразу
+  // после коннекта (esp32_link.cpp там же, где уже шлётся "cmd:exit").
+  if (length == 10 && memcmp(payload, "mirror:off", 10) == 0) {
+    gClientWantsBinary[num] = false;
+    Serial.printf("[web] live WS client #%u opted out of the OLED mirror (mirror:off)\n", num);
     return;
   }
   // "cmd:" — префикс, отличающий одиночную команду кнопки от прочего (сейчас это единственное,
@@ -2661,7 +2794,14 @@ static String buildStatusJson() {
   status += String(megaLinkTemp(1), 1);
   status += ",";
   status += String(megaLinkTemp(2), 1);
-  status += "]}";
+  status += "]";
+  // KnobControl Фаза 8 (ARCHITECTURE.md "Wi-Fi handoff") — реактивный сигнал на случай, когда
+  // кноп УЖЕ на связи в момент сброса/смены сети: он сверяет это поле с собственным сохранённым
+  // значением на каждом push без отдельного запроса. GET /wifi-creds ниже — для самого
+  // первичного пэйринга/случая "кноп был не на связи, нужно досверяться явным запросом"
+  status += ",\"wifiCredGen\":";
+  status += wifiCredGen();
+  status += "}";
   return status;
 }
 
@@ -2816,19 +2956,46 @@ static void handleSeek() {
 // Полный заводской сброс всей системы одной кнопкой (заменила прежнюю отдельную "Сменить
 // Wi-Fi" — та же идея, шире). Порядок важен: клиент (PAGE_HTML, factoryReset()) СНАЧАЛА
 // разлогинивает Spotify локально (spLogout(), чисто client-side, ESP32 о Spotify вообще ничего
-// не знает) и только потом шлёт этот запрос. Здесь — сперва отвечаем клиенту (чтобы alert() с
-// подтверждением не завис в ожидании), потом сбрасываем Arylic (см. arylicTriggerFactoryReset()
-// — свежий mDNS, не кэш/статический IP: система может физически переехать в другой дом/сеть, и
-// сам сброс fire-and-forget, ответа Arylic не ждём), и только в конце — себя (то же самое,
-// что раньше делала handleWifiForget(): стереть Wi-Fi credentials и перезагрузиться; следующий
-// wifiSetupBegin(), main.cpp, не найдёт сохранённой сети и сам поднимет AP-режим настройки)
+// не знает) и только потом шлёт этот запрос.
+//
+// Найдено живьём (2026-10-21, тот же день, два отдельных бага подряд):
+// 1. `wifiForgetCredentials()` раньше стояла ПОСЛЕ `arylicTriggerFactoryReset()` — несколько
+//    секунд после 200 OK этот ESP32 всё ещё отвечал СТАРЫМИ кредами/gen на `GET /wifi-creds`,
+//    кноб успевал забрать их ДО реального стирания. Решено переносом стирания раньше — но решило
+//    только эту гонку, не следующую.
+// 2. Пользователь надёжно воспроизвёл: после ДОЛГОЙ непрерывной работы (куча успевает
+//    фрагментироваться — видно по падению maxAlloc в периодическом [heap]-логе) сам TLS-хендшейк
+//    внутри `arylicTriggerFactoryReset()` начинал молча проваливаться на `client.connect()` —
+//    сразу после РУЧНОГО ребута companion'а тот же сброс отрабатывал каждый раз. Вместо охоты за
+//    источниками фрагментации по всему коду — сброс теперь разбит на два перезапуска. Этот
+//    обработчик только ставит флаг и сразу перезагружается (см. wifiMarkFactoryResetPending() в
+//    wifi_setup.h) — гарантированно чистая куча на следующей загрузке. Вся настоящая работа
+//    (подключение ещё валидными кредами, сам сброс Arylic, стирание Wi-Fi, broadcast кнобу) —
+//    в runPendingFactoryReset() (main.cpp), которая ловит этот флаг в самом начале setup(), ДО
+//    обычного wifiSetupBegin().
 static void handleFactoryReset() {
-  server.send(200, "text/plain", "OK, сбрасываю Arylic и перезагружаюсь в режим настройки");
-  delay(50); // даём TCP-ответу уйти клиенту, прежде чем тратить время на Arylic/перезагрузку
-  arylicTriggerFactoryReset();
-  wifiForgetCredentials();
-  delay(1000); // тот же запас, что был у handleWifiForget() — перед тем как рвать сеть перезагрузкой
+  server.send(200, "text/plain", "OK, перезагружаюсь перед сбросом Arylic...");
+  delay(50); // даём TCP-ответу уйти клиенту, прежде чем перезагружаться
+  // KnobControl Фаза 8 — быстрый путь для случая "кноп уже на связи прямо сейчас": толкаем явное
+  // сообщение, не дожидаясь, пока он сам когда-нибудь заметит расхождение wifiCredGen в обычном
+  // статусе. Безопасно слать уже СЕЙЧАС, до того как креды реально стёрты (это случится только
+  // на следующей загрузке, см. runPendingFactoryReset() в main.cpp) — кноб просто начнёт охоту
+  // за "PathfinderLink" чуть раньше; она всё равно терпеливо ждёт, пока та появится
+  webControlBroadcastText("factory_reset", "");
+  wifiMarkFactoryResetPending();
   ESP.restart();
+}
+
+// KnobControl Фаза 8 (ARCHITECTURE.md "Wi-Fi handoff") — только через WIFI_SERVICE_AP_SSID
+// (в теории достижим и с домашней сети тоже, раз сервер слушает на всех интерфейсах сразу, но
+// предполагаемый вызывающий — кноп, который ещё не знает домашнюю сеть и подключился именно
+// сюда). Отдаёт их НЕ зашифрованными — тот же уровень доверия, что и сама открытая настройка
+// AudioCtrl-Setup рядом: кто угодно в радиусе действия этой конкретной служебной точки технически
+// мог бы их запросить, но тот же человек мог бы точно так же просто посмотреть пароль роутера
+static void handleWifiCreds() {
+  String json = "{\"ssid\":\"" + jsonEscape(wifiSavedSsid()) + "\",\"pass\":\"" +
+                jsonEscape(wifiSavedPassword()) + "\",\"gen\":" + String(wifiCredGen()) + "}";
+  server.send(200, "application/json", json);
 }
 
 // Рассылает всем открытым соединениям на LIVE_WS_PORT то же самое, что уже отдают
@@ -2873,6 +3040,7 @@ void webControlBegin() {
   server.on("/cmd", handleCmd);
   server.on("/status", handleStatus);
   server.on("/factory-reset", HTTP_POST, handleFactoryReset);
+  server.on("/wifi-creds", handleWifiCreds);
   server.on("/arylic-status", handleArylicStatus);
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.on("/track", handleTrack);
@@ -2889,7 +3057,18 @@ void webControlBegin() {
   // ниже) — если хоть один клиент в _clients[] "призрак" (сокет не шлёт FIN, но и не читает),
   // КАЖДЫЙ такой вызов блокируется на нём до 5с, и так бесконечно, пока клиента не выгонят —
   // ровно это выглядело как "всё зависло насовсем: ни веб-морда, ни кноб, ни Мега по UART".
-  liveWsServer.enableHeartbeat(15000, 3000, 2);
+  //
+  // Исходные (15000, 3000, 2) растянуты (2026-10-21, кноб): это же разрывало соединение и БЕЗ
+  // всякого трафика, просто в простое — на слабом Wi-Fi (RSSI -75...-91dBm) один pong иногда
+  // реально идёт дольше 3с не потому что клиент мёртв, а потому что сигнал слабый и пакет
+  // переотправляется. При допуске всего 2 таких пропусков подряд это ~2×15с+3с ≈ 33с
+  // маргинального сигнала — не такая уж редкая пауза — и клиента рвало за "временно медленный",
+  // а не за "действительно отвалился". Та же логика исправления, что у gSlowStreak выше:
+  // отличать "мёртв" от "сейчас плохо слышно". Новые значения — пинг раз в 15с (без изменений),
+  // 5с на понг (было 3с), 4 пропуска подряд (было 2) — обнаружение настоящего обрыва теперь
+  // занимает до ~65с вместо ~33с, ощутимо медленнее, но для этого устройства (не что-то
+  // критичное по времени типа аварийной кнопки) это приемлемый компромисс против ложных киков.
+  liveWsServer.enableHeartbeat(15000, 5000, 4);
 
   gLiveWsQueue = xQueueCreate(kLiveWsQueueLen, sizeof(LiveWsOutMsg));
   // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные

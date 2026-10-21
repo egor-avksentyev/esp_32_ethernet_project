@@ -8,6 +8,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -46,6 +47,32 @@ static bool reachable = false;
 // mDNS/статическим фолбэком целиком, resolveArylicIp() до них даже не доходит
 static IPAddress manualIp;
 static bool manualIpSet = false;
+
+// Найдено живьём (2026-10-21): жёстко зашитый в config.h ARYLIC_IP_OCTETS — это адрес Arylic на
+// КОНКРЕТНОЙ домашней сети на момент прошивки; сменит роутер IP по DHCP (или устройство переедет
+// на другую сеть) — константа молча станет мёртвой ровно так же, как это уже один раз случилось
+// (была .139, реальный адрес оказался .132, см. git-историю этой правки). Вместо повторного ручного
+// подбора при каждой такой смене — переживающий перезагрузки кэш ПОСЛЕДНЕГО РЕАЛЬНО РЕЗОЛВЛЕННОГО
+// через mDNS адреса (NVS, namespace "arylic"): сам себя обновляет на каждый успешный mDNS-запрос,
+// подстраивается под любую сеть автоматически. Зашитая константа остаётся только как последний
+// резерв — на случай первого в жизни запуска на новой сети, когда mDNS ещё ни разу не ответил и
+// в NVS писать было нечего (в этом случае она всё равно, скорее всего, не достучится, но это не
+// хуже, чем просто ничего не делать)
+static void savePersistedArylicIp(IPAddress ip) {
+  Preferences prefs;
+  prefs.begin("arylic", false);
+  prefs.putUInt("ip", (uint32_t)ip);
+  prefs.end();
+}
+
+// Возвращает 0.0.0.0, если в NVS ещё ничего не сохранено (первый запуск / полный стереть-всё сброс)
+static IPAddress loadPersistedArylicIp() {
+  Preferences prefs;
+  prefs.begin("arylic", true);
+  uint32_t raw = prefs.getUInt("ip", 0);
+  prefs.end();
+  return IPAddress(raw);
+}
 
 // Прогресс трека для веб-страницы (см. arylic_metadata.h) — отдельная копия от того, что
 // уходит на Mega (там своя, короче, MEGA_LINK_META_MAX_LEN)
@@ -156,10 +183,19 @@ static IPAddress resolveArylicIp() {
     Serial.print(ARYLIC_MDNS_HOSTNAME);
     Serial.print(".local -> ");
     Serial.println(newIp);
+    savePersistedArylicIp(newIp); // см. комментарий у loadPersistedArylicIp() выше
   } else {
-    newIp = IPAddress(ARYLIC_IP_OCTETS);
-    Serial.print("[arylic] mDNS-резолв не удался, использую статический IP из config.h: ");
-    Serial.println(newIp);
+    IPAddress persisted = loadPersistedArylicIp();
+    if (persisted != IPAddress((uint32_t)0)) {
+      newIp = persisted;
+      Serial.print("[arylic] mDNS-резолв не удался, использую последний известный адрес: ");
+      Serial.println(newIp);
+    } else {
+      newIp = IPAddress(ARYLIC_IP_OCTETS);
+      Serial.print("[arylic] mDNS-резолв не удался, ничего не сохранено — последний резерв из "
+                    "config.h: ");
+      Serial.println(newIp);
+    }
   }
   {
     MutexGuard g(stateMutex);
@@ -246,32 +282,48 @@ bool arylicSeek(long posMs) {
 // смотрит на manualIp/статический фолбэк из config.h, ни то ни другое не годится, если система
 // физически переехала в другую сеть с прошлого опроса). Фолбэк на resolveArylicIp() — только
 // если живой mDNS-запрос прямо сейчас не ответил, лучше какой-то шанс достучаться, чем никакого
+// Найдено живьём (2026-10-21): даже с рабочим persisted-фолбэком (см. resolveArylicIp()) один
+// конкретный запуск этой функции иногда просто не долетает до Arylic — тот же класс дребезга
+// mDNS/TLS, что и у обычного опроса (см. ARYLIC_UNREACHABLE_STREAK ниже), только здесь не было
+// НИ ОДНОЙ попытки повтора. Для обычного опроса единичный сбой неважен — следующий тик через
+// 500мс сам всё поправит; здесь же "следующего тика" просто не будет — ESP.restart() уходит
+// через секунду после вызова, так что единственный шанс всё равно выполнить сброс — это именно
+// сейчас. Два прохода (каждый — свой свежий mDNS-запрос, не один закэшированный IP на оба) с
+// небольшим зазором — минимальная защита конкретно для этого редкого, но важного места.
 void arylicTriggerFactoryReset() {
-  IPAddress ip = MDNS.queryHost(ARYLIC_MDNS_HOSTNAME, 2000);
-  if (ip == IPAddress((uint32_t)0)) {
-    Serial.println("[arylic] заводской сброс: свежий mDNS не ответил, беру резолвленный/статический IP");
-    ip = resolveArylicIp();
-  } else {
-    Serial.print("[arylic] заводской сброс: mDNS -> ");
-    Serial.println(ip);
-  }
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(8); // see sendArylicCommand() above — bumped 2->8, see its comment
-  client.setTimeout(3000);
-  if (!client.connect(ip, 443)) {
-    Serial.println("[arylic] заводской сброс: не удалось подключиться, пропускаю");
-    client.stop(); // see sendArylicCommand() above — don't rely on the destructor for this
+  for (int attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      Serial.println("[arylic] заводской сброс: первая попытка не удалась, пробую ещё раз");
+      delay(300);
+    }
+    IPAddress ip = MDNS.queryHost(ARYLIC_MDNS_HOSTNAME, 2000);
+    if (ip == IPAddress((uint32_t)0)) {
+      Serial.println("[arylic] заводской сброс: свежий mDNS не ответил, беру резолвленный/статический IP");
+      ip = resolveArylicIp();
+    } else {
+      Serial.print("[arylic] заводской сброс: mDNS -> ");
+      Serial.println(ip);
+    }
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setHandshakeTimeout(8); // see sendArylicCommand() above — bumped 2->8, see its comment
+    client.setTimeout(3000);
+    if (!client.connect(ip, 443)) {
+      Serial.println("[arylic] заводской сброс: не удалось подключиться");
+      client.stop(); // see sendArylicCommand() above — don't rely on the destructor for this
+      continue;
+    }
+    // Пишем запрос и сразу рвём соединение, не читая ответ — сам Arylic отвечает не сразу
+    // (см. живой тест: ~9с до "OK"), а результат тут всё равно не проверяется и не показывается
+    client.print(String("GET /httpapi.asp?command=restoreToDefault HTTP/1.1\r\n") +
+                 "Host: " + ip.toString() + "\r\n" +
+                 "Connection: close\r\n\r\n");
+    client.flush();
+    client.stop();
+    Serial.println("[arylic] заводской сброс: запрос отправлен, ответа не ждём");
     return;
   }
-  // Пишем запрос и сразу рвём соединение, не читая ответ — сам Arylic отвечает не сразу
-  // (см. живой тест: ~9с до "OK"), а результат тут всё равно не проверяется и не показывается
-  client.print(String("GET /httpapi.asp?command=restoreToDefault HTTP/1.1\r\n") +
-               "Host: " + ip.toString() + "\r\n" +
-               "Connection: close\r\n\r\n");
-  client.flush();
-  client.stop();
-  Serial.println("[arylic] заводской сброс: запрос отправлен, ответа не ждём");
+  Serial.println("[arylic] заводской сброс: обе попытки не удались, пропускаю");
 }
 
 static String toHexUpper(const String& input) {
@@ -878,8 +930,14 @@ static void arylicPollTask(void* /*param*/) {
   }
 }
 
+void arylicMetadataInitMutex() {
+  if (stateMutex == nullptr) {
+    stateMutex = xSemaphoreCreateMutex();
+  }
+}
+
 void arylicMetadataBegin() {
-  stateMutex = xSemaphoreCreateMutex();
+  arylicMetadataInitMutex();
   // 12288 вместо дефолтных 8192 — TLS-хендшейк (mbedTLS) внутри HTTPClient/WiFiClientSecure
   // требователен к стеку, а перезагрузки на предыдущей версии (опрос прямо в loop(), общий
   // стек с веб-сервером) похожи на нехватку именно этого

@@ -44,7 +44,13 @@ bool wifiSetupBegin() {
   }
 
   WiFi.onEvent(onWifiEvent);
-  WiFi.mode(WIFI_STA);
+  // AP_STA, не чистый STA — ARCHITECTURE.md "Wi-Fi handoff": держим домашнюю сеть И служебную
+  // точку для кнопа одновременно (единственное ограничение — пока САМ ESP32 ещё не настроен и
+  // показывает WIFI_PROVISION_AP_SSID вместо этой, см. wifi_provisioning.cpp, радио тогда занято)
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(WIFI_SERVICE_AP_SSID, WIFI_SERVICE_AP_PASSWORD);
+  Serial.print("[wifi] служебная точка для кнопа поднята: ");
+  Serial.println(WIFI_SERVICE_AP_SSID);
   WiFi.begin(ssid.c_str(), password.c_str());
   Serial.print("[wifi] connecting to ");
   Serial.println(ssid);
@@ -94,17 +100,72 @@ bool wifiIsConnected() {
   return connected;
 }
 
+// Общий инкремент — вызывается из обеих функций ниже, одна точка правды вместо дублирования
+// "+1 и записать обратно" в двух местах
+static void bumpCredGen(Preferences& prefs) {
+  unsigned long gen = prefs.getULong("gen", 0);
+  prefs.putULong("gen", gen + 1);
+}
+
 void wifiSaveCredentials(const char* ssid, const char* password) {
   Preferences prefs;
   prefs.begin("wifi", false);
   prefs.putString("ssid", ssid);
   prefs.putString("pass", password);
+  bumpCredGen(prefs);
   prefs.end();
 }
 
 void wifiForgetCredentials() {
   Preferences prefs;
   prefs.begin("wifi", false);
+  // Найдено живьём: prefs.clear() стёр бы и сам "gen" тоже — следующий wifiSaveCredentials()
+  // после него снова начал бы с 0, что кноп (уже видевший более высокий gen раньше) расценил
+  // бы как "откат назад", не как новое поколение — bumpCredGen() должен отработать ПОСЛЕ clear,
+  // чтобы итоговое значение гарантированно оказалось строго больше всего, что было раньше
   prefs.clear();
+  bumpCredGen(prefs);
   prefs.end();
+}
+
+unsigned long wifiCredGen() {
+  Preferences prefs;
+  prefs.begin("wifi", true);
+  unsigned long gen = prefs.getULong("gen", 0);
+  prefs.end();
+  return gen;
+}
+
+String wifiSavedSsid() {
+  Preferences prefs;
+  prefs.begin("wifi", true);
+  String ssid = prefs.getString("ssid", "");
+  prefs.end();
+  return ssid;
+}
+
+String wifiSavedPassword() {
+  Preferences prefs;
+  prefs.begin("wifi", true);
+  String password = prefs.getString("pass", "");
+  prefs.end();
+  return password;
+}
+
+void wifiMarkFactoryResetPending() {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  prefs.putBool("resetPending", true);
+  prefs.end();
+}
+
+bool wifiConsumeFactoryResetPending() {
+  Preferences prefs;
+  prefs.begin("wifi", false);
+  bool pending = prefs.getBool("resetPending", false);
+  if (pending) {
+    prefs.putBool("resetPending", false);
+  }
+  prefs.end();
+  return pending;
 }
