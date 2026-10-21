@@ -41,29 +41,29 @@ struct LiveWsOutMsg {
   uint16_t len;
   uint8_t* data; // heap, выделяется в enqueueLiveWs(), освобождается в liveWsTaskFn()
 };
-constexpr int kLiveWsQueueLen = 16; // ~16КБ худший случай (самое большое сообщение — кадр
-                                     // OLED-зеркала, 1026 байт) — не жалко, запас против всплеска
-static QueueHandle_t gLiveWsQueue = nullptr;
+constexpr int kLiveWsTextQueueLen = 16; // MENU:/SETTINGS:/статус/трек — мелкие, частые
+static QueueHandle_t gLiveWsTextQueue = nullptr;
 
-// Найдено живьём (2026-10-21): даже после того, как кноб сам отказался от бинарных кадров
-// (gClientWantsBinary выше), очередь всё равно забивалась и дёргала ДРУГОГО клиента (который
-// зеркало не отключал) — Mega перерисовывает экран почти непрерывно (~20мс/кадр даже в
-// простое, см. frame_mirror.cpp), и frameMirrorPoll() enqueue'ил КАЖДЫЙ новый кадр, не
-// спрашивая, успели ли отправить предыдущий. Раз это "живое зеркало", а не точный протокол —
-// устаревший кадр в очереди бесполезен, важен только самый свежий. Держим не больше ОДНОГО
-// бинарного сообщения в очереди разом: пока предыдущее не отправлено всем клиентам (сброс в
-// liveWsTaskFn), новые кадры просто отбрасываются здесь же, не доходя до xQueueSend — это и
-// не даёт десяткам кадров скапливаться в очереди впереди куда более важных текстовых
-// MENU:/SETTINGS:, и ограничивает суммарный бинарный трафик сам по себе, независимо от того,
-// какой конкретно клиент сейчас медленный.
-static volatile bool gBinaryFramePending = false;
+// Найдено живьём (2026-10-21, через жалобу "как только открываю веб-морду на телефоне — у
+// кноба начинаются глюки, закрываю — всё идеально"): mirror:off/лимит на один кадр (ниже)
+// убрали катастрофические многосекундные залипания, но НЕ убрали более мягкую, но постоянную
+// задержку — ВСЕ клиенты обрабатывались В ОДНОЙ очереди строго по порядку поступления. Пока
+// сервер отправляет кадр зеркала браузеру (даже без всякого "залипания" — просто обычная
+// сетевая задержка телефона, доли секунды), СЛЕДУЮЩЕЕ сообщение в очереди — а это сплошь и
+// рядом MENU:/SETTINGS: для кноба — просто ждёт своей очереди за ним. Кноб opt-out'нулся от
+// самих кадров, но не от этой очерёдности — кадр всё ещё занимает место ПЕРЕД его данными.
+// Фикс — zеркало на СВОЕЙ отдельной однослотовой очереди (см. gLiveWsBinQueue ниже),
+// обрабатывается ТОЛЬКО после того, как текстовая очередь полностью вычерпана на этой
+// итерации (liveWsTaskFn) — зеркало никогда больше не встаёт впереди данных кноба.
+constexpr int kLiveWsBinQueueLen = 1; // всегда только самый свежий кадр — то же, что раньше
+                                      // делал gBinaryFramePending вручную, теперь просто через
+                                      // глубину очереди (переполнение = "есть новее, этот не нужен")
+static QueueHandle_t gLiveWsBinQueue = nullptr;
 
 static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
-  if (!gLiveWsQueue || len == 0) {
+  QueueHandle_t queue = binary ? gLiveWsBinQueue : gLiveWsTextQueue;
+  if (!queue || len == 0) {
     return;
-  }
-  if (binary && gBinaryFramePending) {
-    return; // a newer frame will replace this one soon enough — see gBinaryFramePending above
   }
   uint8_t* copy = (uint8_t*)malloc(len);
   if (!copy) {
@@ -72,22 +72,20 @@ static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
   }
   memcpy(copy, src, len);
   LiveWsOutMsg msg{binary, (uint16_t)len, copy};
-  if (xQueueSend(gLiveWsQueue, &msg, 0) == pdTRUE) {
-    if (binary) {
-      gBinaryFramePending = true; // cleared by liveWsTaskFn once this message is fully handled
-    }
-  } else {
+  if (xQueueSend(queue, &msg, 0) != pdTRUE) {
     free(copy);
     // Найдено живьём (2026-10-20): пока liveWsTaskFn сам застрял на одном медленном клиенте,
     // очередь переполняется на КАЖДОЙ попытке — без троттлинга это десятки Serial.println() в
-    // секунду. Считаем молча, печатаем раз в 2с одной строкой с накопленным счётчиком
+    // секунду. Считаем молча, печатаем раз в 2с одной строкой с накопленным счётчиком.
+    // Для бинарной очереди (глубина 1) это штатный, ожидаемый путь — "есть кадр новее",
+    // не авария — но тот же троттлинг не мешает на всякий случай
     static unsigned long lastDropLogMs = 0;
     static unsigned long dropsSinceLog = 0;
     dropsSinceLog++;
     unsigned long now = millis();
     if (now - lastDropLogMs >= 2000) {
-      Serial.printf("[web] live WS queue full, dropped %lu message(s) in last %lums\n",
-                    dropsSinceLog, now - lastDropLogMs);
+      Serial.printf("[web] live WS %s queue full, dropped %lu message(s) in last %lums\n",
+                    binary ? "binary" : "text", dropsSinceLog, now - lastDropLogMs);
       lastDropLogMs = now;
       dropsSinceLog = 0;
     }
@@ -169,49 +167,66 @@ static uint8_t gSlowStreak[WEBSOCKETS_SERVER_CLIENT_MAX] = {0};
 static bool gClientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX];
 
 // Единственное место, которое трогает liveWsServer после setup() — см. комментарий у
-// LiveWsOutMsg выше. Один проход .loop() (приём/рукопожатия/heartbeat), затем вся очередь
-// целиком (без ограничения "одно сообщение за тик", в отличие от KnobControl — здесь это
-// именно рассылка, не команда с ретраями, достаточно отправить и забыть)
+// LiveWsOutMsg выше. Общая часть "разослать одно сообщение по всем клиентам" — вынесена из
+// liveWsTaskFn(), чтобы не дублировать между текстовой и бинарной очередями
+static void dispatchLiveWsMsg(const LiveWsOutMsg& msg) {
+  for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
+    if (!liveWsServer.clientIsConnected(num)) {
+      continue;
+    }
+    if (msg.binary && !gClientWantsBinary[num]) {
+      continue; // this client opted out of the OLED mirror — see its own comment above
+    }
+    gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
+    gWsStepStartMs = millis();
+    bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
+                          : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
+    unsigned long elapsed = millis() - gWsStepStartMs;
+    if (elapsed > kSlowClientKickMs) {
+      gSlowStreak[num]++;
+      if (gSlowStreak[num] >= kSlowStreakKick) {
+        Serial.printf("[web] live WS client #%u slow %u times in a row (latest %lums%s) — "
+                      "kicking\n",
+                      num, gSlowStreak[num], elapsed, ok ? "" : ", send failed");
+        liveWsServer.disconnect(num);
+        gSlowStreak[num] = 0;
+      } else {
+        Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u)\n", num, elapsed,
+                      ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick);
+      }
+    } else {
+      gSlowStreak[num] = 0;
+    }
+  }
+}
+
+// Один проход .loop() (приём/рукопожатия/heartbeat), затем ВСЯ текстовая очередь целиком —
+// MENU:/SETTINGS:/статус/трек, то, от чего зависит отзывчивость кноба и веб-морды — и только
+// ПОСЛЕ неё, максимум ОДИН кадр зеркала (см. gLiveWsBinQueue/его собственный комментарий за
+// тем, почему это отдельная очередь, а не то же самое, что раньше). Даже обычная, не
+// "залипшая" отправка кадра браузеру занимает заметное время — если бы она стояла в общей
+// очереди ПЕРЕД чьими-то данными кноба, та просто ждала бы своей очереди позади неё каждый
+// раз, когда зеркало открыто. Порядок здесь — текст, потом бинарник — гарантирует, что кадр
+// зеркала может задержать СЛЕДУЮЩУЮ итерацию не более чем на время своей ОДНОЙ отправки,
+// а не накапливаться впереди данных кноба бесконечно.
 static void liveWsTaskFn(void*) {
   for (;;) {
     gWsCurrentStep = "liveWsServer.loop()";
     gWsStepStartMs = millis();
     liveWsServer.loop();
+
     LiveWsOutMsg msg;
-    while (xQueueReceive(gLiveWsQueue, &msg, 0) == pdTRUE) {
-      for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
-        if (!liveWsServer.clientIsConnected(num)) {
-          continue;
-        }
-        if (msg.binary && !gClientWantsBinary[num]) {
-          continue; // this client opted out of the OLED mirror — see its own comment above
-        }
-        gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
-        gWsStepStartMs = millis();
-        bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
-                              : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
-        unsigned long elapsed = millis() - gWsStepStartMs;
-        if (elapsed > kSlowClientKickMs) {
-          gSlowStreak[num]++;
-          if (gSlowStreak[num] >= kSlowStreakKick) {
-            Serial.printf("[web] live WS client #%u slow %u times in a row (latest %lums%s) — "
-                          "kicking\n",
-                          num, gSlowStreak[num], elapsed, ok ? "" : ", send failed");
-            liveWsServer.disconnect(num);
-            gSlowStreak[num] = 0;
-          } else {
-            Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u)\n", num, elapsed,
-                          ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick);
-          }
-        } else {
-          gSlowStreak[num] = 0;
-        }
-      }
-      if (msg.binary) {
-        gBinaryFramePending = false; // see enqueueLiveWs() — a newer frame can queue again now
-      }
+    while (xQueueReceive(gLiveWsTextQueue, &msg, 0) == pdTRUE) {
+      dispatchLiveWsMsg(msg);
       free(msg.data);
     }
+
+    LiveWsOutMsg binMsg;
+    if (xQueueReceive(gLiveWsBinQueue, &binMsg, 0) == pdTRUE) {
+      dispatchLiveWsMsg(binMsg);
+      free(binMsg.data);
+    }
+
     gWsCurrentStep = "idle";
     vTaskDelay(pdMS_TO_TICKS(10));
   }
@@ -3082,7 +3097,8 @@ void webControlBegin() {
   // живому тесту, не ловит.
   liveWsServer.enableHeartbeat(15000, 5000, 4);
 
-  gLiveWsQueue = xQueueCreate(kLiveWsQueueLen, sizeof(LiveWsOutMsg));
+  gLiveWsTextQueue = xQueueCreate(kLiveWsTextQueueLen, sizeof(LiveWsOutMsg));
+  gLiveWsBinQueue = xQueueCreate(kLiveWsBinQueueLen, sizeof(LiveWsOutMsg));
   // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные
   // фоновые сетевые задачи; loop() (UART к Меге, HTTP-сервер) остаётся на core 1 (ARDUINO_RUNNING_CORE)
   xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 6144, nullptr, 1, nullptr, 0);
