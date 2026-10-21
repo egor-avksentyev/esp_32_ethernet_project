@@ -60,10 +60,47 @@ constexpr int kLiveWsBinQueueLen = 1; // всегда только самый с
                                       // глубину очереди (переполнение = "есть новее, этот не нужен")
 static QueueHandle_t gLiveWsBinQueue = nullptr;
 
+// Найдено живьём (2026-10-21, через добавленное логирование CONNECTED/DISCONNECTED выше и
+// "live WS queue full, dropped N message(s)"): настоящая причина разрывов у кноба — не сигнал
+// и не частота его собственных "cmd:", а то, что КАЖДЫЙ клиент этого сокета безусловно получал
+// ещё и попиксельное зеркало OLED-экрана (frame_mirror.cpp, кадры по 1026 байт, льются с Меги
+// почти непрерывно, пока та что-то анимирует/перерисовывает — то есть и в простое тоже). Кноб
+// эти кадры вообще не умеет принимать (`WStype_BIN` в его esp32_link.cpp не обрабатывается) —
+// это чистый лишний объём именно для него, независимо от RSSI.
+//
+// По идее пользователя (2026-10-21, тот же день): по умолчанию — false теперь у ВСЕХ, включая
+// веб-страницу, не только у кноба — зеркало включается явной кнопкой на странице (PAGE_HTML,
+// toggleMirror(), шлёт "mirror:on"/"mirror:off"), не льётся автоматом, пока его реально никто
+// не смотрит. Кноб по-прежнему шлёт "mirror:off" сам сразу после коннекта (handleLiveWsEvent
+// ниже/esp32_link.cpp) — теперь избыточно относительно дефолта, но оставлено как явная защита
+// намерения на случай, если дефолт когда-нибудь снова поменяют.
+static bool gClientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX];
+
+// Ни один клиент сейчас не хочет кадров зеркала — значит генерировать/рассылать их незачем
+// вообще, не только фильтровать на отправке (см. enqueueLiveWs() ниже, единственный
+// вызывающий). ВАЖНО: это вызывается из основного потока (frameMirrorPoll()'s loop()), а
+// `liveWsServer` трогает только liveWsTaskFn (см. комментарий выше) — поэтому здесь нарочно НЕ
+// зовётся `liveWsServer.clientIsConnected()`, только простое чтение `gClientWantsBinary[]`.
+// Худший случай при этом — разъединившийся клиент оставляет после себя "true" в своём слоте,
+// и мы НЕ пропускаем генерацию кадра, хотя могли бы — чистая недооптимизация, не гонка и не
+// баг (ложноотрицательного случая, когда реально подключённый клиент пропустит кадр, здесь
+// нет: его собственный флаг при этом всегда true, независимо от этой проверки)
+static bool anyClientWantsBinary() {
+  for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
+    if (gClientWantsBinary[num]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
   QueueHandle_t queue = binary ? gLiveWsBinQueue : gLiveWsTextQueue;
   if (!queue || len == 0) {
     return;
+  }
+  if (binary && !anyClientWantsBinary()) {
+    return; // nobody's watching — don't even malloc/queue a frame nobody will receive
   }
   uint8_t* copy = (uint8_t*)malloc(len);
   if (!copy) {
@@ -154,17 +191,6 @@ constexpr unsigned long kSlowClientKickMs = 1500;
 // достаточно быстрой отправке.
 constexpr uint8_t kSlowStreakKick = 3;
 static uint8_t gSlowStreak[WEBSOCKETS_SERVER_CLIENT_MAX] = {0};
-
-// Найдено живьём (2026-10-21, через добавленное логирование CONNECTED/DISCONNECTED выше и
-// "live WS queue full, dropped N message(s)"): настоящая причина разрывов у кноба — не сигнал
-// и не частота его собственных "cmd:", а то, что КАЖДЫЙ клиент этого сокета безусловно получает
-// ещё и попиксельное зеркало OLED-экрана (frame_mirror.cpp, кадры по 1026 байт, льются с Меги
-// почти непрерывно, пока та что-то анимирует/перерисовывает — то есть и в простое тоже). Кноб
-// эти кадры вообще не умеет принимать (`WStype_BIN` в его esp32_link.cpp не обрабатывается) —
-// это чистый лишний объём именно для него, независимо от RSSI. По умолчанию — true (обратная
-// совместимость с веб-страницей, которая зеркало и показывает), кноб сам говорит "mirror:off"
-// сразу после коннекта (см. handleLiveWsEvent ниже и esp32_link.cpp на стороне кноба).
-static bool gClientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX];
 
 // Единственное место, которое трогает liveWsServer после setup() — см. комментарий у
 // LiveWsOutMsg выше. Общая часть "разослать одно сообщение по всем клиентам" — вынесена из
@@ -614,10 +640,14 @@ static const char PAGE_HTML[] PROGMEM =
   "<span data-i18n=remoteControl>Remote Control</span></button>"
   "<div id=remoteCollapse><div>"
   // Попиксельное зеркало OLED, приходит бинарным WS-кадром поверх уже открытого liveWs (см.
-  // connectLiveWs()). Скрыт по
-  // умолчанию, показывается сам, как только придёт первый кадр (applyFrameData()). Над кнопками
-  // управления (не под ними) — по просьбе пользователя. 70% ширины (было 100% — уменьшено на
-  // 30%), по центру
+  // connectLiveWs()). Выключено по умолчанию и у ВЕБ-страницы тоже (2026-10-21, по идее
+  // пользователя) — не льётся с Меги непрерывно, пока его реально никто не смотрит (см.
+  // anyClientWantsBinary() на стороне ESP32), включается явной кнопкой ниже (toggleMirror()).
+  // Сам canvas скрыт, пока не включено ИЛИ пока не пришёл первый кадр после включения
+  // (applyFrameData()). Над кнопками управления (не под ними) — по просьбе пользователя. 70%
+  // ширины (было 100% — уменьшено на 30%), по центру
+  "<button id=mirrorToggleBtn onclick=toggleMirror() data-i18n=mirrorShow"
+  " style='margin:0 auto 10px;display:block'>Show Screen</button>"
   "<canvas id=megaFramePixel width=128 height=64 style='display:none;width:70%;"
   "image-rendering:pixelated;background-image:linear-gradient(135deg,#000,#3a3a3a);"
   "border-radius:8px;"
@@ -1161,6 +1191,7 @@ static const char PAGE_HTML[] PROGMEM =
   "artTheme:'Тема обложки:',artThemeCircle:'Круг (крутится)',artThemeSquare:'Квадрат (статично)',"
   "artThemeCube:'3D-куб',artThemePyramid:'3D-пирамида',"
   "ok:'OK',mute:'Без звука',source:'Источник',power:'Питание',"
+  "mirrorShow:'Показать экран',mirrorHide:'Скрыть экран',"
   "powerOn:'Включить',poweringOff:'Выключение',"
   "apply:'Применить',ipPlaceholder:'IP Arylic вручную',factoryReset:'Заводской сброс',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi отключён',lastCommand:'последняя команда',"
@@ -1202,6 +1233,7 @@ static const char PAGE_HTML[] PROGMEM =
   "artTheme:'Тема обкладинки:',artThemeCircle:'Коло (крутиться)',artThemeSquare:'Квадрат (статично)',"
   "artThemeCube:'3D-куб',artThemePyramid:'3D-піраміда',"
   "ok:'OK',mute:'Без звуку',source:'Джерело',power:'Живлення',"
+  "mirrorShow:'Показати екран',mirrorHide:'Сховати екран',"
   "powerOn:'Увімкнути',poweringOff:'Вимкнення',"
   "apply:'Застосувати',ipPlaceholder:'IP Arylic вручну',factoryReset:'Заводське скидання',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi вимкнено',lastCommand:'остання команда',"
@@ -1243,6 +1275,7 @@ static const char PAGE_HTML[] PROGMEM =
   "artTheme:'Tema copertei:',artThemeCircle:'Cerc (se rotește)',artThemeSquare:'Pătrat (static)',"
   "artThemeCube:'Cub 3D',artThemePyramid:'Piramidă 3D',"
   "ok:'OK',mute:'Fără sunet',source:'Sursă',power:'Pornire',"
+  "mirrorShow:'Arată ecranul',mirrorHide:'Ascunde ecranul',"
   "powerOn:'Pornește',poweringOff:'Se oprește',"
   "apply:'Aplică',ipPlaceholder:'IP Arylic manual',factoryReset:'Resetare din fabrică',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi deconectat',lastCommand:'ultima comandă',"
@@ -1284,6 +1317,7 @@ static const char PAGE_HTML[] PROGMEM =
   "artTheme:'Cover theme:',artThemeCircle:'Circle (spinning)',artThemeSquare:'Square (static)',"
   "artThemeCube:'3D cube',artThemePyramid:'3D pyramid',"
   "ok:'OK',mute:'Mute',source:'Source',power:'Power',"
+  "mirrorShow:'Show Screen',mirrorHide:'Hide Screen',"
   "powerOn:'Power On',poweringOff:'Powering off',"
   "apply:'Apply',ipPlaceholder:'Arylic IP manually',factoryReset:'Factory reset',"
   "wifiOk:'Wi-Fi OK',wifiOff:'Wi-Fi disconnected',lastCommand:'last command',"
@@ -1934,13 +1968,27 @@ static const char PAGE_HTML[] PROGMEM =
   "else if(currentScreenId===2){drawMuteOverlay()}"
   "megaFrameCanvas.style.display='block'"
   "}"
+  // Выключено по умолчанию (см. комментарий у кнопки #mirrorToggleBtn выше и gClientWantsBinary
+  // на стороне ESP32) — сервер и так сбрасывает флаг на false при КАЖДОМ новом коннекте этого
+  // сокета (переподключение после разрыва Wi-Fi и т.п. — обычное дело на телефоне), поэтому
+  // переподключение само по себе не "запоминает" включённое состояние — liveWs.onopen ниже
+  // повторяет "mirror:on", если человек уже включил зеркало до разрыва
+  "let mirrorEnabled=false;"
+  "function toggleMirror(){"
+  "mirrorEnabled=!mirrorEnabled;"
+  "if(liveWs&&liveWs.readyState===WebSocket.OPEN){liveWs.send(mirrorEnabled?'mirror:on':'mirror:off')}"
+  "if(!mirrorEnabled){megaFrameCanvas.style.display='none'}"
+  "let btn=document.getElementById('mirrorToggleBtn');"
+  "let key=mirrorEnabled?'mirrorHide':'mirrorShow';"
+  "btn.setAttribute('data-i18n',key);btn.innerText=I18N[currentLang][key]"
+  "}"
   "let liveWs=null;"
   "let liveWsRetryDelay=1000;"
   "function connectLiveWs(){"
   "try{"
   "liveWs=new WebSocket('ws://'+location.hostname+':82/');"
   "liveWs.binaryType='arraybuffer';"
-  "liveWs.onopen=function(){liveWsRetryDelay=1000};"
+  "liveWs.onopen=function(){liveWsRetryDelay=1000;if(mirrorEnabled)liveWs.send('mirror:on')};"
   "liveWs.onmessage=function(ev){"
   "lastLiveMsgTime=Date.now();"
   "if(ev.data instanceof ArrayBuffer){applyFrameData(ev.data);return}"
@@ -2741,22 +2789,35 @@ static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size
   // отключает молча), либо настоящий обрыв TCP со стороны кноба.
   if (type == WStype_CONNECTED) {
     Serial.printf("[web] live WS client #%u connected\n", num);
-    // Default to true (web page wants the OLED mirror) — see gClientWantsBinary's own comment.
-    // Reset on every fresh connect, not just once, so a slot a knob just vacated doesn't leave
-    // a stale "false" behind for whatever reconnects into the same client number next.
-    gClientWantsBinary[num] = true;
+    // Найдено живьём (2026-10-21, по идее пользователя): раньше по умолчанию было true (веб-
+    // страница ведь показывает зеркало) — значит кадры лились НЕПРЕРЫВНО с Меги в сторону
+    // любой просто открытой вкладки, даже если человек на зеркало прямо сейчас не смотрит (а
+    // именно это и забивало общий канал, см. gLiveWsBinQueue выше). Теперь по умолчанию
+    // ВЫКЛЮЧЕНО у всех без исключения — включается только явно, кнопкой на странице
+    // (PAGE_HTML, toggleMirror()), шлёт "mirror:on"/"mirror:off" по этому же сокету. Сброс на
+    // false при каждом новом коннекте — так новая вкладка/клиент не наследует состояние от
+    // того, кто раньше занимал этот слот.
+    gClientWantsBinary[num] = false;
     return;
   }
   if (type == WStype_DISCONNECTED) {
     Serial.printf("[web] live WS client #%u disconnected\n", num);
+    gClientWantsBinary[num] = false; // keep anyClientWantsBinary() accurate, see its own comment
     return;
   }
   if (type != WStype_TEXT) {
     return;
   }
-  // "mirror:off" — см. gClientWantsBinary выше. Не под префиксом "cmd:" (разбирается ДО него
-  // — простой отдельный протокольный сигнал, не команда кнопки), шлётся кнобом один раз сразу
-  // после коннекта (esp32_link.cpp там же, где уже шлётся "cmd:exit").
+  // "mirror:on"/"mirror:off" — см. gClientWantsBinary выше. Не под префиксом "cmd:" (разбирается
+  // ДО него — простой отдельный протокольный сигнал, не команда кнопки). "off" шлёт кноб один
+  // раз сразу после коннекта (esp32_link.cpp, там же, где уже шлётся "cmd:exit") — больше не
+  // обязательно раз default и так false, но оставлено как явная защита намерения. "on" шлёт
+  // веб-страница по нажатию кнопки (toggleMirror()), "off" — повторно по снятию галочки.
+  if (length == 9 && memcmp(payload, "mirror:on", 9) == 0) {
+    gClientWantsBinary[num] = true;
+    Serial.printf("[web] live WS client #%u opted into the OLED mirror (mirror:on)\n", num);
+    return;
+  }
   if (length == 10 && memcmp(payload, "mirror:off", 10) == 0) {
     gClientWantsBinary[num] = false;
     Serial.printf("[web] live WS client #%u opted out of the OLED mirror (mirror:off)\n", num);
