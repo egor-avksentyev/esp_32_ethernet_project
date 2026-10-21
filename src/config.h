@@ -22,7 +22,12 @@
 // явно задать пины через begin(baud, config, rx, tx) (стандартные пины UART1 на многих платах
 // заняты SPI flash, но ESP32 умеет перенаправить UART на любой GPIO через матрицу выводов).
 // TX не нужен — канал строго Mega->ESP32, поэтому FRAME_MIRROR_TX_PIN не задействован (-1)
-#define FRAME_MIRROR_RX_PIN 34 // Только вход (safe strapping-нейтральный пин), TX от Mega сюда
+//
+// 2026-10-21: было 34 (safe на классическом ESP32) — после переезда на
+// Waveshare ESP32-S3-DEV-KIT-N16R8 GPIO33-37 заняты под Octal PSRAM (специфика именно R8-
+// варианта с восемью мегабайтами PSRAM, на quad-PSRAM платах было бы иначе) — сменено на
+// свободный GPIO4, провод перевешан физически на эту ногу.
+#define FRAME_MIRROR_RX_PIN 4
 #define FRAME_MIRROR_BAUD 500000 // Должно совпадать с FRAME_MIRROR_BAUD в hardware_settings.h Mega-репозитория
 
 // --- Веб-страница управления (web_control.h/.cpp) ---
