@@ -211,21 +211,15 @@ static void dispatchLiveWsMsg(const LiveWsOutMsg& msg) {
     unsigned long elapsed = millis() - gWsStepStartMs;
     if (elapsed > kSlowClientKickMs) {
       gSlowStreak[num]++;
-      // Диагностика (2026-10-23, временная) — companionRSSI — сигнал самого компаньона к
-      // роутеру В МОМЕНТ зависания, t=millis() — чтобы сопоставить с "[web] cmd from client"
-      // таймстампами выше и понять, совпадает ли зависание отправки с моментом вращения кнобом.
       if (gSlowStreak[num] >= kSlowStreakKick) {
         Serial.printf("[web] live WS client #%u slow %u times in a row (latest %lums%s) — "
-                      "kicking t=%lu companionRSSI=%d\n",
-                      num, gSlowStreak[num], elapsed, ok ? "" : ", send failed", millis(),
-                      WiFi.RSSI());
+                      "kicking\n",
+                      num, gSlowStreak[num], elapsed, ok ? "" : ", send failed");
         liveWsServer.disconnect(num);
         gSlowStreak[num] = 0;
       } else {
-        Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u) t=%lu "
-                      "companionRSSI=%d\n",
-                      num, elapsed, ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick,
-                      millis(), WiFi.RSSI());
+        Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u)\n", num, elapsed,
+                      ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick);
       }
     } else {
       gSlowStreak[num] = 0;
@@ -2843,13 +2837,6 @@ static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size
   for (size_t i = prefixLen; i < length; i++) {
     action += (char)payload[i];
   }
-  // Диагностика (2026-10-23, временная — ищем, коррелирует ли момент вращения кнобом с
-  // зависанием исходящей отправки ЕМУ ЖЕ, см. dispatchLiveWsMsg's "live WS client #N slow"
-  // ниже). WiFi.RSSI() здесь — это сигнал САМОГО КОМПАНЬОНА до роутера, не кноба — раньше
-  // смотрели только на сигнал кноба, но компаньон тоже обычный STA-клиент той же сети, и его
-  // собственная просадка сигнала тоже может объяснять зависшую ИСХОДЯЩУЮ отправку.
-  Serial.printf("[web] cmd from client #%u: \"%s\" t=%lu companionRSSI=%d\n", num,
-                action.c_str(), millis(), WiFi.RSSI());
   executeWebAction(action);
 }
 
