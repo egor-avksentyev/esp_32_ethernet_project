@@ -113,9 +113,20 @@ bool fetchCurrentWeather(double lat, double lon, int &tempCOut, int &wmoCodeOut)
                "&longitude=" + String(lon, 4) + "&current_weather=true";
   String body;
   if (!httpsGet(url, body)) return false;
-  if (body.indexOf("\"current_weather\"") < 0) return false;
-  tempCOut = (int)std::lround(extractDoubleField(body, "\"temperature\":"));
-  wmoCodeOut = (int)extractDoubleField(body, "\"weathercode\":");
+  // Real bug, found by curling the live API directly (not just read as plausible from memory):
+  // the response ALWAYS includes a "current_weather_units" object BEFORE "current_weather" —
+  // {"current_weather_units":{"temperature":"\xC2\xB0""C",...,"weathercode":"wmo code"},
+  //  "current_weather":{"temperature":11.5,...,"weathercode":3}}. extractDoubleField()'s naive
+  // first-match indexOf() was finding "temperature"/"weathercode" inside THAT units object
+  // instead — their values there are QUOTED STRINGS ("°C"/"wmo code"), and atof() on a string
+  // starting with a quote character returns 0.0. Every poll "succeeded" (current_weather was
+  // present) but silently produced 0°/code 0 — exactly the "показывает 0 градусов" symptom
+  // reported live. Fix: locate "current_weather":{ itself and search only from there on.
+  int cwIdx = body.indexOf("\"current_weather\":{");
+  if (cwIdx < 0) return false;
+  String cw = body.substring(cwIdx);
+  tempCOut = (int)std::lround(extractDoubleField(cw, "\"temperature\":"));
+  wmoCodeOut = (int)extractDoubleField(cw, "\"weathercode\":");
   return true;
 }
 
