@@ -57,16 +57,19 @@ void extractStringField(const String &payload, const char *key, char *out, size_
   out[len] = '\0';
 }
 
-// GET over HTTPS with a short handshake timeout — same reasoning/values as
-// arylic_metadata.cpp's sendArylicCommand(): WiFiClientSecure's default 120s handshake timeout
-// would otherwise be able to stall this whole background task for 2 minutes on a bad TLS
-// attempt, same class of bug already found and fixed there.
+// GET over HTTPS with a short handshake timeout — same reasoning as arylic_metadata.cpp's
+// sendArylicCommand(): WiFiClientSecure's default 120s handshake timeout would otherwise be able
+// to stall this whole background task for 2 minutes on a bad TLS attempt. Shorter than arylic's
+// own 8s there, though — that value was tuned for one specific flaky local device; ipwho.is/
+// open-meteo are reliable public cloud APIs with no reason to need that much slack, and this
+// task now runs on core 1 (see weatherBegin()) alongside loop()'s own UART polling, so keeping
+// the worst-case stall short matters more here than it did for arylic's dedicated core 0 task.
 bool httpsGet(const String &url, String &body) {
   WiFiClientSecure client;
   client.setInsecure();
-  client.setHandshakeTimeout(8);
+  client.setHandshakeTimeout(4);
   HTTPClient http;
-  http.setTimeout(4000);
+  http.setTimeout(3000);
   if (!http.begin(client, url)) return false;
   int code = http.GET();
   bool ok = code == HTTP_CODE_OK;
@@ -79,7 +82,7 @@ bool httpsGet(const String &url, String &body) {
 
 bool httpGetPlain(const String &url, String &body) {
   HTTPClient http;
-  http.setTimeout(4000);
+  http.setTimeout(3000);
   if (!http.begin(url)) return false;
   int code = http.GET();
   bool ok = code == HTTP_CODE_OK;
@@ -170,7 +173,16 @@ void weatherBegin() {
   if (stateMutex == nullptr) {
     stateMutex = xSemaphoreCreateMutex();
   }
-  // Stack size matches arylic_metadata.cpp's own TLS-handshake task (12288) — this task does
-  // the same kind of WiFiClientSecure/mbedTLS work, same stack pressure applies.
-  xTaskCreatePinnedToCore(weatherPollTask, "weather_poll", 12288, nullptr, 1, nullptr, 0);
+  // Real crash, found live (2026-10-23): core 0 already hosts arylic_poll (its own TLS-heavy
+  // HTTPS calls every ARYLIC_POLL_INTERVAL_MS=500ms) plus the WS/HTTP server tasks
+  // (web_control.cpp's live_ws/web_http). Putting this task's own TLS handshakes (up to ~8s
+  // each, twice per poll) on the SAME core tipped total core-0 load over the edge — the idle
+  // task stopped getting scheduled long enough to feed the Task Watchdog, and the whole board
+  // panic-rebooted (`task_wdt: ... IDLE0 (CPU 0)`), repeatedly, since this task's very first
+  // poll fires immediately at boot and the crash landed right back in the same collision every
+  // time. Core 1 only runs loop()'s own lightweight polling (UART/motor_ws/frame_mirror, all
+  // just buffer reads) — plenty of room for an HTTPS round-trip that only happens twice an hour.
+  // Stack size (12288) still matches arylic_metadata.cpp's own TLS task — same mbedTLS stack
+  // pressure applies regardless of which core runs it.
+  xTaskCreatePinnedToCore(weatherPollTask, "weather_poll", 12288, nullptr, 1, nullptr, 1);
 }
