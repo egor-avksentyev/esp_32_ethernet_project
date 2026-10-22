@@ -3227,7 +3227,19 @@ void webControlBegin() {
   // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные
   // фоновые сетевые задачи; loop() (UART к Меге) остаётся на core 1 (ARDUINO_RUNNING_CORE), сам
   // HTTP-сервер теперь тоже на core 0 — см. webControlTaskFn ниже
-  xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 6144, nullptr, 1, nullptr, 0);
+  //
+  // Реальный краш, найден живьём (2026-10-23): 6144 байт стека хватало, ПОКА этот поток не
+  // делал ничего тяжелее отправки готовых строк клиентам. Но handleLiveWsEvent() (обработка
+  // входящих "cmd:power" — ниже по файлу) вызывает applyWebPowerState(), а та, если трек
+  // реально играет, зовёт arylicSendPlayerCommand() — HTTPS/TLS-запрос к Arylic прямо из ЭТОЙ
+  // задачи. TLS-хендшейк (mbedTLS) сам по себе требователен к стеку — ровно та же причина,
+  // по которой arylic_poll/weather_poll ниже получили 12288, а не меньше (см. их же
+  // комментарии). 6144 байт для TLS — вдвое меньше нужного: стек переполнялся ("Stack canary
+  // watchpoint triggered (live_ws)"), роняя весь чип ИМЕННО в момент получения команды питания
+  // во время воспроизведения (при остановленном треке arylicSendPlayerCommand() не звалась
+  // вообще — arylicTrackIsPlaying()-гейт в applyWebPowerState() — поэтому баг был незаметен
+  // в режиме "не играет").
+  xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 12288, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(webControlTaskFn, "web_http", 8192, nullptr, 1, nullptr, 0);
 
