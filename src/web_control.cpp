@@ -3,6 +3,7 @@
 #include "mega_link.h"
 #include "wifi_setup.h"
 #include "arylic_metadata.h"
+#include "weather.h"
 #include <WebServer.h>
 #include <WiFi.h>
 #include <WebSocketsServer.h>
@@ -2846,6 +2847,9 @@ static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size
 // Вынесена из handleStatus() отдельно — тем же телом пользуется и HTTP-обработчик (оставлен
 // как есть, простой и надёжный фолбэк), и постоянный push по WebSocket (см. liveWsBroadcastPoll()
 // ниже) — то же самое json, тот же смысл полей, просто два разных способа его доставить
+static String jsonEscape(const String& raw); // defined below, forward-declared for use here —
+                                               // weatherCity() needs escaping same as track text
+
 static String buildStatusJson() {
   String status = "{\"wifi\":";
   status += wifiIsConnected() ? "true" : "false";
@@ -2877,6 +2881,18 @@ static String buildStatusJson() {
   // первичного пэйринга/случая "кноп был не на связи, нужно досверяться явным запросом"
   status += ",\"wifiCredGen\":";
   status += wifiCredGen();
+  // KnobControl "Статус-бейджи на Home — ... погода" — piggybacked on this same push rather than
+  // a separate poll from the knob (see weather.h's file comment): weatherKnown()==false until
+  // this ESP32's own background poll (weather.cpp) completes its first successful round, same
+  // "Known" gating as megaKnown/voltageKnown above.
+  status += ",\"weatherKnown\":";
+  status += weatherKnown() ? "true" : "false";
+  status += ",\"weatherCity\":\"";
+  status += jsonEscape(weatherCity());
+  status += "\",\"weatherTempC\":";
+  status += String(weatherTempC());
+  status += ",\"weatherCode\":";
+  status += String(weatherWmoCode());
   status += "}";
   return status;
 }
@@ -2960,6 +2976,27 @@ static String buildTrackJson() {
 
 static void handleTrack() {
   server.send(200, "application/json", buildTrackJson());
+}
+
+// Standalone endpoint, same fields as buildStatusJson()'s weather* ones — parity with the web
+// UI's own loadWeather() data and a plain-curl-able way to check the background poll directly
+// (weather.cpp), even though the knob itself reads these fields off the status push instead of
+// calling this.
+static String buildWeatherJson() {
+  String resp = "{\"known\":";
+  resp += weatherKnown() ? "true" : "false";
+  resp += ",\"city\":\"";
+  resp += jsonEscape(weatherCity());
+  resp += "\",\"tempC\":";
+  resp += String(weatherTempC());
+  resp += ",\"code\":";
+  resp += String(weatherWmoCode());
+  resp += "}";
+  return resp;
+}
+
+static void handleWeather() {
+  server.send(200, "application/json", buildWeatherJson());
 }
 
 // Разрешённые действия управления воспроизведением — белый список, чтобы в API Arylic не
@@ -3146,6 +3183,7 @@ void webControlBegin() {
   server.on("/arylic-status", handleArylicStatus);
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.on("/track", handleTrack);
+  server.on("/weather", handleWeather);
   server.on("/playback", handlePlayback);
   server.on("/volume", handleVolume);
   server.on("/seek", handleSeek);

@@ -9,6 +9,7 @@
 #include "arylic_metadata.h"
 #include "motor_ws.h"
 #include "frame_mirror.h"
+#include "weather.h"
 
 // true, пока идёт настройка Wi-Fi (своя точка доступа, см. wifi_provisioning.h) — обычная
 // работа (веб-управление/метадата) в этом режиме не имеет смысла, реальной сети ещё нет
@@ -122,6 +123,7 @@ void setup() {
     MDNS.begin("esp32-audio-webctl");
     webControlBegin();
     arylicMetadataBegin();
+    weatherBegin();
     motorWsBegin();
     frameMirrorBegin();
   } else {

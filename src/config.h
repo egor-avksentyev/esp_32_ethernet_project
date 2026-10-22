@@ -102,6 +102,18 @@
 #define ARYLIC_UPNP_PORT 49152
 #define ARYLIC_UPNP_CONTROL_PATH "/upnp/control/rendertransport1"
 
+// Weather (see weather.h) — server-side port of the web UI's own IP-geolocation + Open-Meteo
+// polling (web_control.cpp's loadWeather() JS), so the knob (no browser, no IP of its own worth
+// geolocating) gets the same data via buildStatusJson()'s weather fields / GET /weather.
+// 30 minutes, same cadence the web UI's own setInterval(loadWeather,1800000) already uses —
+// weather doesn't change fast enough to justify polling more often, and both calls below are
+// free public APIs it'd be rude to hammer.
+#define WEATHER_POLL_INTERVAL_MS 1800000UL
+// Retry sooner than the full interval after a failure (e.g. right after boot, before DNS/Wi-Fi
+// has fully settled, or a transient outage of either public API) — otherwise a single bad poll
+// would leave the badge empty for up to 30 minutes.
+#define WEATHER_POLL_RETRY_MS 120000UL
+
 // --- Wi-Fi: подключение сохранённой сетью + реконнект (wifi_setup.h/.cpp) ---
 // SSID/пароль хранятся в NVS (Preferences), не в коде — см. wifiSaveCredentials()/
 // wifiForgetCredentials() и wifi_provisioning.h за тем, как они туда попадают.
