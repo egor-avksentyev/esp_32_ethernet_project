@@ -3111,6 +3111,32 @@ void webControlBroadcastText(const char* type, const char* text) {
   enqueueLiveWs(false, (const uint8_t*)msg.c_str(), msg.length());
 }
 
+// Найдено живьём (2026-10-21, Playwright-сессия): `server.handleClient()` (WebServer.h,
+// синхронная/блокирующая библиотека — та же причина, по которой motor_ws/liveWs вообще
+// появились, см. их собственные комментарии) изредка занимала ~400мс на один HTTP-запрос
+// (видно по `[loop] slow step: webControlPoll took ...`) — ровно тогда, когда свежая
+// браузерная вкладка грузит страницу и разом бьёт несколько эндпоинтов (/status, /track,
+// /arylic-status, см. poll() в PAGE_HTML). Пока это крутилось в основном loop() (на том же
+// потоке, что читает UART от Меги) — любая такая пауза откладывала обработку команд с кноба
+// на всё это время, никак не связано ни с зеркалом, ни с Wi-Fi-сигналом.
+//
+// Фикс — тот же приём, что уже применён к liveWsServer/arylicPollTask: HTTP-сервер теперь
+// полностью живёт на своей выделенной задаче (core 0, как и они), loop() на core 1 эту паузу
+// больше не видит вообще. Минимальная правка: ничего в самих обработчиках (handleCmd/
+// handleStatus/handleVolume/...) не менялось — те уже и так переживают вызов с другого потока
+// (handleLiveWsEvent() уже вызывает executeWebAction() с потока liveWsTaskFn параллельно с
+// HTTP-обработчиком /cmd на этом новом потоке, и это уже было принято как безопасное — см.
+// комментарий у handleLiveWsEvent — запись на Mega защищена megaMutex независимо от потока).
+// liveWsBroadcastPoll() сознательно ОСТАВЛЕНА в webControlPoll() на main loop() — она не
+// трогает `server` вообще, только enqueueLiveWs() (уже потокобезопасна через очередь), так что
+// выносить её незачем, а не выносить — меньше изменений.
+static void webControlTaskFn(void*) {
+  for (;;) {
+    server.handleClient();
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+}
+
 void webControlBegin() {
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
@@ -3161,9 +3187,11 @@ void webControlBegin() {
   gLiveWsTextQueue = xQueueCreate(kLiveWsTextQueueLen, sizeof(LiveWsOutMsg));
   gLiveWsBinQueue = xQueueCreate(kLiveWsBinQueueLen, sizeof(LiveWsOutMsg));
   // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные
-  // фоновые сетевые задачи; loop() (UART к Меге, HTTP-сервер) остаётся на core 1 (ARDUINO_RUNNING_CORE)
+  // фоновые сетевые задачи; loop() (UART к Меге) остаётся на core 1 (ARDUINO_RUNNING_CORE), сам
+  // HTTP-сервер теперь тоже на core 0 — см. webControlTaskFn ниже
   xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 6144, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(webControlTaskFn, "web_http", 8192, nullptr, 1, nullptr, 0);
 
   Serial.print("[web] веб-морда поднята, зайди на http://");
   Serial.print(WiFi.localIP());
@@ -3172,6 +3200,7 @@ void webControlBegin() {
 }
 
 void webControlPoll() {
-  server.handleClient();
+  // server.handleClient() moved to its own task (webControlTaskFn, see webControlBegin()) —
+  // see that comment for why. This now only drives the periodic status/track push.
   liveWsBroadcastPoll();
 }
