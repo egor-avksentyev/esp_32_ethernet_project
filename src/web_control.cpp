@@ -14,16 +14,9 @@
 
 static WebServer server(WEB_SERVER_PORT);
 
-// Постоянный push статуса/трека/Arylic на веб-страницу — см. LIVE_WS_PORT (config.h) за
-// объяснением зачем, и liveWsBroadcastPoll() ниже за самой рассылкой. Один клиент ожидается
-// на практике (одна открытая вкладка), но WebSocketsServer сам поддерживает несколько —
-// рассылка широковещательная, лишнего кода под общий случай не потребовалось
-static WebSocketsServer liveWsServer(LIVE_WS_PORT);
-
 // Найдено живьём (2026-10-20): WEBSOCKETS_TCP_TIMEOUT (platformio.ini, 800мс) ограничивает
 // только ПАУЗУ МЕЖДУ успешными частичными записями внутри WebSockets::write() — не суммарное
-// время всей передачи. Если TCP-приём у клиента (чаще всего — у кноба, с его уже
-// задокументированной нестабильностью Wi-Fi) принимает данные мелкими порциями, каждая из
+// время всей передачи. Если TCP-приём у клиента принимает данные мелкими порциями, каждая из
 // которых укладывается в 800мс, таймер каждый раз сбрасывается — и реальный лог показал
 // `megaLinkPoll` STUCK на 16029мс суммарно, хотя "таймаут" формально не превышался ни разу.
 // `megaLinkPoll()`/`frameMirrorPoll()` звали `webControlBroadcastText()`/`webControlBroadcastFrame()`
@@ -32,152 +25,19 @@ static WebSocketsServer liveWsServer(LIVE_WS_PORT);
 // мог это вылечить — нужно, чтобы отправка клиентам вообще не делила поток с чтением UART.
 //
 // Фикс — тот же архитектурный приём, что уже сработал в KnobControl (esp32_link.cpp,
-// gWsSendQueue/wsTaskFn): `liveWsServer` теперь ПОЛНОСТЬЮ принадлежит одной выделенной задаче
-// (liveWsTaskFn ниже) — и .loop(), и сама рассылка. Producer-функции (webControlBroadcastText/
+// gWsSendQueue/wsTaskFn): каждый WS-сервер теперь ПОЛНОСТЬЮ принадлежит своей выделенной
+// задаче — и .loop(), и сама рассылка. Producer-функции (webControlBroadcastText/
 // webControlBroadcastFrame/liveWsBroadcastPoll, всё ещё вызываемые из основного loop()) только
-// кладут готовое сообщение в очередь (enqueueLiveWs(), без блокировки) и сразу возвращаются —
-// сколько бы ни "тупил" конкретный клиент, чтение UART от Меги это больше не видит.
+// кладут готовое сообщение в очередь (без блокировки) и сразу возвращаются — сколько бы ни
+// "тупил" конкретный клиент, чтение UART от Меги это больше не видит.
 struct LiveWsOutMsg {
   bool binary;
   uint16_t len;
-  uint8_t* data; // heap, выделяется в enqueueLiveWs(), освобождается в liveWsTaskFn()
+  uint8_t* data; // heap, выделяется в enqueueOnChannel(), освобождается в liveWsTaskFn()
 };
 constexpr int kLiveWsTextQueueLen = 16; // MENU:/SETTINGS:/статус/трек — мелкие, частые
-static QueueHandle_t gLiveWsTextQueue = nullptr;
-
-// Найдено живьём (2026-10-21, через жалобу "как только открываю веб-морду на телефоне — у
-// кноба начинаются глюки, закрываю — всё идеально"): mirror:off/лимит на один кадр (ниже)
-// убрали катастрофические многосекундные залипания, но НЕ убрали более мягкую, но постоянную
-// задержку — ВСЕ клиенты обрабатывались В ОДНОЙ очереди строго по порядку поступления. Пока
-// сервер отправляет кадр зеркала браузеру (даже без всякого "залипания" — просто обычная
-// сетевая задержка телефона, доли секунды), СЛЕДУЮЩЕЕ сообщение в очереди — а это сплошь и
-// рядом MENU:/SETTINGS: для кноба — просто ждёт своей очереди за ним. Кноб opt-out'нулся от
-// самих кадров, но не от этой очерёдности — кадр всё ещё занимает место ПЕРЕД его данными.
-// Фикс — zеркало на СВОЕЙ отдельной однослотовой очереди (см. gLiveWsBinQueue ниже),
-// обрабатывается ТОЛЬКО после того, как текстовая очередь полностью вычерпана на этой
-// итерации (liveWsTaskFn) — зеркало никогда больше не встаёт впереди данных кноба.
-constexpr int kLiveWsBinQueueLen = 1; // всегда только самый свежий кадр — то же, что раньше
-                                      // делал gBinaryFramePending вручную, теперь просто через
-                                      // глубину очереди (переполнение = "есть новее, этот не нужен")
-static QueueHandle_t gLiveWsBinQueue = nullptr;
-
-// Найдено живьём (2026-10-21, через добавленное логирование CONNECTED/DISCONNECTED выше и
-// "live WS queue full, dropped N message(s)"): настоящая причина разрывов у кноба — не сигнал
-// и не частота его собственных "cmd:", а то, что КАЖДЫЙ клиент этого сокета безусловно получал
-// ещё и попиксельное зеркало OLED-экрана (frame_mirror.cpp, кадры по 1026 байт, льются с Меги
-// почти непрерывно, пока та что-то анимирует/перерисовывает — то есть и в простое тоже). Кноб
-// эти кадры вообще не умеет принимать (`WStype_BIN` в его esp32_link.cpp не обрабатывается) —
-// это чистый лишний объём именно для него, независимо от RSSI.
-//
-// По идее пользователя (2026-10-21, тот же день): по умолчанию — false теперь у ВСЕХ, включая
-// веб-страницу, не только у кноба — зеркало включается явной кнопкой на странице (PAGE_HTML,
-// toggleMirror(), шлёт "mirror:on"/"mirror:off"), не льётся автоматом, пока его реально никто
-// не смотрит. Кноб по-прежнему шлёт "mirror:off" сам сразу после коннекта (handleLiveWsEvent
-// ниже/esp32_link.cpp) — теперь избыточно относительно дефолта, но оставлено как явная защита
-// намерения на случай, если дефолт когда-нибудь снова поменяют.
-static bool gClientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX];
-
-// Ни один клиент сейчас не хочет кадров зеркала — значит генерировать/рассылать их незачем
-// вообще, не только фильтровать на отправке (см. enqueueLiveWs() ниже, единственный
-// вызывающий). ВАЖНО: это вызывается из основного потока (frameMirrorPoll()'s loop()), а
-// `liveWsServer` трогает только liveWsTaskFn (см. комментарий выше) — поэтому здесь нарочно НЕ
-// зовётся `liveWsServer.clientIsConnected()`, только простое чтение `gClientWantsBinary[]`.
-// Худший случай при этом — разъединившийся клиент оставляет после себя "true" в своём слоте,
-// и мы НЕ пропускаем генерацию кадра, хотя могли бы — чистая недооптимизация, не гонка и не
-// баг (ложноотрицательного случая, когда реально подключённый клиент пропустит кадр, здесь
-// нет: его собственный флаг при этом всегда true, независимо от этой проверки)
-static bool anyClientWantsBinary() {
-  for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
-    if (gClientWantsBinary[num]) {
-      return true;
-    }
-  }
-  return false;
-}
-
-static void enqueueLiveWs(bool binary, const uint8_t* src, size_t len) {
-  QueueHandle_t queue = binary ? gLiveWsBinQueue : gLiveWsTextQueue;
-  if (!queue || len == 0) {
-    return;
-  }
-  if (binary && !anyClientWantsBinary()) {
-    return; // nobody's watching — don't even malloc/queue a frame nobody will receive
-  }
-  uint8_t* copy = (uint8_t*)malloc(len);
-  if (!copy) {
-    Serial.println("[web] live WS: malloc failed, dropping message");
-    return;
-  }
-  memcpy(copy, src, len);
-  LiveWsOutMsg msg{binary, (uint16_t)len, copy};
-  if (xQueueSend(queue, &msg, 0) != pdTRUE) {
-    free(copy);
-    // Найдено живьём (2026-10-20): пока liveWsTaskFn сам застрял на одном медленном клиенте,
-    // очередь переполняется на КАЖДОЙ попытке — без троттлинга это десятки Serial.println() в
-    // секунду. Считаем молча, печатаем раз в 2с одной строкой с накопленным счётчиком.
-    // Для бинарной очереди (глубина 1) это штатный, ожидаемый путь — "есть кадр новее",
-    // не авария — но тот же троттлинг не мешает на всякий случай
-    static unsigned long lastDropLogMs = 0;
-    static unsigned long dropsSinceLog = 0;
-    dropsSinceLog++;
-    unsigned long now = millis();
-    if (now - lastDropLogMs >= 2000) {
-      Serial.printf("[web] live WS %s queue full, dropped %lu message(s) in last %lums\n",
-                    binary ? "binary" : "text", dropsSinceLog, now - lastDropLogMs);
-      lastDropLogMs = now;
-      dropsSinceLog = 0;
-    }
-  }
-}
-
-// Диагностика специально для liveWsTaskFn (добавлено 2026-10-20): лог с main.cpp подтвердил,
-// что megaLinkPoll/frameMirrorPoll больше НЕ подвисают, когда клиент тормозит — но пользователь
-// всё равно поймал полное зависание (нужен power-cycle) в том же тесте, где лог показал
-// непрерывный спам "queue full" 20+ секунд подряд без восстановления. Это сильно похоже на то,
-// что теперь застревает сама liveWsTaskFn (внутри WebSockets::write() к одному "медленно
-// капающему" клиенту — см. комментарий у LiveWsOutMsg выше за тем, почему короткий таймаут это
-// не ловит) — но прямого доказательства ещё нет, лог обрывается раньше, чем виден исход. Тот
-// же приём "канарейки", что уже есть в main.cpp: отдельная задача кричит в Serial ПРЯМО ВО
-// ВРЕМЯ подвисания, не дожидаясь, пока шаг наконец завершится
-static volatile unsigned long gWsStepStartMs = 0;
-static const char* volatile gWsCurrentStep = "idle";
-
-static void liveWsCanaryTaskFn(void*) {
-  bool warned = false;
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(500));
-    unsigned long stuckFor = millis() - gWsStepStartMs;
-    if (stuckFor > 2000) {
-      if (!warned) {
-        warned = true;
-        Serial.printf("[ws-watchdog] liveWsTaskFn STUCK in '%s' for %lums and counting\n",
-                      gWsCurrentStep, stuckFor);
-      }
-    } else {
-      warned = false;
-    }
-  }
-}
-
-// Найдено живьём (2026-10-20, через ту самую канарейку выше): `[ws-watchdog] liveWsTaskFn
-// STUCK in 'broadcastTXT'` реально срабатывал (2-2.5с на эпизод) — подтверждает, что
-// `broadcastTXT()`/`broadcastBIN()` (библиотека гоняет их по ВСЕМ клиентам одним вызовом,
-// см. WebSocketsServer.cpp) действительно застревают на одном "капающем" клиенте (почти
-// наверняка кноб — см. его уже задокументированную нестабильность Wi-Fi), и что КАЖДЫЙ
-// следующий цикл рассылки застревает на НЁМ ЖЕ СНОВА — heartbeat (enableHeartbeat выше)
-// клиента не выгоняет, потому что сам процесс проверки pong происходит внутри .loop(), а пока
-// задача сидит внутри write(), до .loop() дело просто не доходит. В предыдущей версии это и
-// объясняло бесконечный спам "queue full" — задача не успевала выгрести очередь быстрее, чем
-// та наполнялась от Меги/OLED-зеркала.
-//
-// Фикс — не просто ждать, а бить тревогу: раз сам per-client write() неостановим снаружи
-// (библиотека не даёт прервать его на середине), единственный способ ограничить урон — не
-// позволять ОДНОМУ и тому же клиенту тормозить КАЖДЫЙ следующий цикл рассылки. Переходим с
-// broadcastTXT/broadcastBIN (один вызов на всех клиентов разом) на ручной обход по каждому
-// клиенту (sendTXT/sendBIN, WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) с
-// замером времени — см. gSlowStreak ниже за тем, что именно считается "клиент безнадёжен".
-// Безопасно звать disconnect() отсюда же — это единственный поток, который вообще трогает
-// liveWsServer после setup()
+constexpr int kLiveWsBinQueueLen = 1;   // всегда только самый свежий кадр зеркала — переполнение
+                                        // очереди глубиной 1 значит "есть новее, этот не нужен"
 constexpr unsigned long kSlowClientKickMs = 1500;
 
 // Найдено живьём (2026-10-21, кноб): кикать клиента по ОДНОЙ медленной отправке — перебор на
@@ -191,70 +51,184 @@ constexpr unsigned long kSlowClientKickMs = 1500;
 // отдельно, кикаем только когда достигнут kSlowStreakKick, сбрасываем счётчик на любой
 // достаточно быстрой отправке.
 constexpr uint8_t kSlowStreakKick = 3;
-static uint8_t gSlowStreak[WEBSOCKETS_SERVER_CLIENT_MAX] = {0};
 
-// Единственное место, которое трогает liveWsServer после setup() — см. комментарий у
-// LiveWsOutMsg выше. Общая часть "разослать одно сообщение по всем клиентам" — вынесена из
-// liveWsTaskFn(), чтобы не дублировать между текстовой и бинарной очередями
-static void dispatchLiveWsMsg(const LiveWsOutMsg& msg) {
+// Найдено живьём (2026-10-24, через жалобу "кручу кноб после простоя — не отвечает 5-6 секунд"
+// и живой лог компаньона, где клиент веб-страницы в браузере — "client #0" — несколько раз
+// подряд подвисал в sendTXT() на 2-10 секунд): кноб и веб-страница раньше сидели на ОДНОМ
+// LIVE_WS_PORT, обслуживаемом ОДНОЙ задачей (liveWsTaskFn). Эта задача рассылает сообщения
+// клиентам строго последовательно, блокирующим sendTXT() — пока она висит внутри write() к
+// подвисшему браузеру, она физически не может вернуться к liveWsServer.loop(), а именно
+// .loop() разбирает входящие "cmd:" от ДРУГИХ клиентов, включая кноб. Один застрявший клиент
+// (неважно, из-за чего — плохой Wi-Fi, фоновое ограничение ОС на телефоне во время звонка,
+// что угодно) на несколько секунд полностью перекрывал обработку команд кноба.
+//
+// Фикс — тот же приём, что уже разделил MOTOR_WS_PORT и LIVE_WS_PORT: у кноба теперь СВОЙ
+// WebSocketsServer (KNOB_WS_PORT, config.h) и своя независимая FreeRTOS-задача. Чтобы не
+// дублировать всю эту инфраструктуру (очереди/watchdog/slow-streak/рассылку) дважды почти
+// одинаковым кодом, она обёрнута в LiveWsChannel — один и тот же набор функций работает с
+// любым из двух каналов через ссылку на его собственный экземпляр.
+struct LiveWsChannel {
+  WebSocketsServer& server;
+  const char* logTag; // "live" (веб-страница) или "knob" — префикс в Serial-логах этого канала
+
+  QueueHandle_t textQueue = nullptr;
+  QueueHandle_t binQueue = nullptr; // nullptr — канал не поддерживает OLED-зеркало (см. ниже)
+
+  // Один слот на клиента (WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) —
+  // у каждого канала СВОЙ набор подключений, поэтому и состояние по клиенту не разделяется
+  // между каналами.
+  bool clientWantsBinary[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+  uint8_t slowStreak[WEBSOCKETS_SERVER_CLIENT_MAX] = {};
+
+  // Диагностика конкретно для задачи этого канала (см. liveWsCanaryTaskFn ниже) — отдельная
+  // задача кричит в Serial ПРЯМО ВО ВРЕМЯ подвисания, не дожидаясь, пока шаг наконец завершится
+  volatile unsigned long stepStartMs = 0;
+  const char* volatile currentStep = "idle";
+
+  // Троттлинг "queue full" — без него застрявшая задача даёт десятки Serial.printf() в секунду
+  unsigned long lastDropLogMs = 0;
+  unsigned long dropsSinceLog = 0;
+
+  LiveWsChannel(WebSocketsServer& s, const char* tag) : server(s), logTag(tag) {}
+};
+
+static WebSocketsServer liveWsServer(LIVE_WS_PORT);
+static WebSocketsServer knobWsServer(KNOB_WS_PORT);
+static LiveWsChannel gWebChannel(liveWsServer, "live");
+static LiveWsChannel gKnobChannel(knobWsServer, "knob");
+
+// Ни один клиент этого канала сейчас не хочет кадров зеркала — значит генерировать/рассылать
+// их незачем вообще, не только фильтровать на отправке (см. enqueueOnChannel() ниже).
+// ВАЖНО: это читается из основного потока (frameMirrorPoll()'s loop()), а `server` трогает
+// только собственная задача канала — поэтому здесь нарочно НЕ зовётся `clientIsConnected()`,
+// только простое чтение `clientWantsBinary[]`. Худший случай — разъединившийся клиент
+// оставляет после себя "true" в своём слоте, и мы НЕ пропускаем генерацию кадра, хотя могли
+// бы — чистая недооптимизация, не гонка и не баг.
+static bool anyClientWantsBinary(LiveWsChannel& ch) {
   for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
-    if (!liveWsServer.clientIsConnected(num)) {
-      continue;
+    if (ch.clientWantsBinary[num]) {
+      return true;
     }
-    if (msg.binary && !gClientWantsBinary[num]) {
-      continue; // this client opted out of the OLED mirror — see its own comment above
+  }
+  return false;
+}
+
+static void enqueueOnChannel(LiveWsChannel& ch, bool binary, const uint8_t* src, size_t len) {
+  QueueHandle_t queue = binary ? ch.binQueue : ch.textQueue;
+  if (!queue || len == 0) {
+    return;
+  }
+  if (binary && !anyClientWantsBinary(ch)) {
+    return; // nobody's watching — don't even malloc/queue a frame nobody will receive
+  }
+  uint8_t* copy = (uint8_t*)malloc(len);
+  if (!copy) {
+    Serial.printf("[%s] live WS: malloc failed, dropping message\n", ch.logTag);
+    return;
+  }
+  memcpy(copy, src, len);
+  LiveWsOutMsg msg{binary, (uint16_t)len, copy};
+  if (xQueueSend(queue, &msg, 0) != pdTRUE) {
+    free(copy);
+    ch.dropsSinceLog++;
+    unsigned long now = millis();
+    if (now - ch.lastDropLogMs >= 2000) {
+      Serial.printf("[%s] live WS %s queue full, dropped %lu message(s) in last %lums\n",
+                    ch.logTag, binary ? "binary" : "text", ch.dropsSinceLog, now - ch.lastDropLogMs);
+      ch.lastDropLogMs = now;
+      ch.dropsSinceLog = 0;
     }
-    gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
-    gWsStepStartMs = millis();
-    bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
-                          : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
-    unsigned long elapsed = millis() - gWsStepStartMs;
-    if (elapsed > kSlowClientKickMs) {
-      gSlowStreak[num]++;
-      if (gSlowStreak[num] >= kSlowStreakKick) {
-        Serial.printf("[web] live WS client #%u slow %u times in a row (latest %lums%s) — "
-                      "kicking\n",
-                      num, gSlowStreak[num], elapsed, ok ? "" : ", send failed");
-        liveWsServer.disconnect(num);
-        gSlowStreak[num] = 0;
-      } else {
-        Serial.printf("[web] live WS client #%u slow (%lums%s, streak %u/%u)\n", num, elapsed,
-                      ok ? "" : ", send failed", gSlowStreak[num], kSlowStreakKick);
+  }
+}
+
+// Текстовые рассылки (menu/settings/mute/streamer/status/track/arylic/factory_reset) идут В
+// ОБА канала — и веб-странице, и кнобу нужны одни и те же живые данные. OLED-зеркало
+// (бинарное) остаётся только у веб-канала — кноб его никогда не поддерживал (см.
+// handleLiveWsEvent ниже, он сам шлёт "mirror:off" сразу после коннекта).
+static void enqueueLiveWsText(const uint8_t* src, size_t len) {
+  enqueueOnChannel(gWebChannel, false, src, len);
+  enqueueOnChannel(gKnobChannel, false, src, len);
+}
+
+static void liveWsCanaryTaskFn(void* arg) {
+  LiveWsChannel& ch = *reinterpret_cast<LiveWsChannel*>(arg);
+  bool warned = false;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+    unsigned long stuckFor = millis() - ch.stepStartMs;
+    if (stuckFor > 2000) {
+      if (!warned) {
+        warned = true;
+        Serial.printf("[ws-watchdog] %s_ws STUCK in '%s' for %lums and counting\n", ch.logTag,
+                      ch.currentStep, stuckFor);
       }
     } else {
-      gSlowStreak[num] = 0;
+      warned = false;
+    }
+  }
+}
+
+// Единственное место, которое трогает ch.server после setup() этого канала. Общая часть
+// "разослать одно сообщение по всем клиентам" — вынесена, чтобы не дублировать между текстовой
+// и бинарной очередями (и теперь — между каналами).
+static void dispatchMsgOnChannel(LiveWsChannel& ch, const LiveWsOutMsg& msg) {
+  for (uint8_t num = 0; num < WEBSOCKETS_SERVER_CLIENT_MAX; num++) {
+    if (!ch.server.clientIsConnected(num)) {
+      continue;
+    }
+    if (msg.binary && !ch.clientWantsBinary[num]) {
+      continue; // this client opted out of the OLED mirror — see its own comment above
+    }
+    ch.currentStep = msg.binary ? "sendBIN" : "sendTXT";
+    ch.stepStartMs = millis();
+    bool ok = msg.binary ? ch.server.sendBIN(num, msg.data, msg.len)
+                          : ch.server.sendTXT(num, (const char*)msg.data, msg.len);
+    unsigned long elapsed = millis() - ch.stepStartMs;
+    if (elapsed > kSlowClientKickMs) {
+      ch.slowStreak[num]++;
+      if (ch.slowStreak[num] >= kSlowStreakKick) {
+        Serial.printf("[%s] live WS client #%u slow %u times in a row (latest %lums%s) — "
+                      "kicking\n",
+                      ch.logTag, num, ch.slowStreak[num], elapsed, ok ? "" : ", send failed");
+        ch.server.disconnect(num);
+        ch.slowStreak[num] = 0;
+      } else {
+        Serial.printf("[%s] live WS client #%u slow (%lums%s, streak %u/%u)\n", ch.logTag, num,
+                      elapsed, ok ? "" : ", send failed", ch.slowStreak[num], kSlowStreakKick);
+      }
+    } else {
+      ch.slowStreak[num] = 0;
     }
   }
 }
 
 // Один проход .loop() (приём/рукопожатия/heartbeat), затем ВСЯ текстовая очередь целиком —
-// MENU:/SETTINGS:/статус/трек, то, от чего зависит отзывчивость кноба и веб-морды — и только
-// ПОСЛЕ неё, максимум ОДИН кадр зеркала (см. gLiveWsBinQueue/его собственный комментарий за
-// тем, почему это отдельная очередь, а не то же самое, что раньше). Даже обычная, не
-// "залипшая" отправка кадра браузеру занимает заметное время — если бы она стояла в общей
-// очереди ПЕРЕД чьими-то данными кноба, та просто ждала бы своей очереди позади неё каждый
-// раз, когда зеркало открыто. Порядок здесь — текст, потом бинарник — гарантирует, что кадр
-// зеркала может задержать СЛЕДУЮЩУЮ итерацию не более чем на время своей ОДНОЙ отправки,
-// а не накапливаться впереди данных кноба бесконечно.
-static void liveWsTaskFn(void*) {
+// MENU:/SETTINGS:/статус/трек — и только ПОСЛЕ неё, максимум ОДИН кадр зеркала (если у этого
+// канала вообще есть binQueue — см. его собственный комментарий за тем, почему это отдельная
+// очередь). Даже обычная, не "залипшая" отправка кадра занимает заметное время — если бы она
+// стояла в общей очереди ПЕРЕД чьими-то данными, та просто ждала бы своей очереди позади неё.
+// Параметризована указателем на канал (arg) — одна и та же задача используется и для веб-,
+// и для кноб-канала, каждый раз с собственным LiveWsChannel.
+static void liveWsTaskFn(void* arg) {
+  LiveWsChannel& ch = *reinterpret_cast<LiveWsChannel*>(arg);
   for (;;) {
-    gWsCurrentStep = "liveWsServer.loop()";
-    gWsStepStartMs = millis();
-    liveWsServer.loop();
+    ch.currentStep = "server.loop()";
+    ch.stepStartMs = millis();
+    ch.server.loop();
 
     LiveWsOutMsg msg;
-    while (xQueueReceive(gLiveWsTextQueue, &msg, 0) == pdTRUE) {
-      dispatchLiveWsMsg(msg);
+    while (ch.textQueue && xQueueReceive(ch.textQueue, &msg, 0) == pdTRUE) {
+      dispatchMsgOnChannel(ch, msg);
       free(msg.data);
     }
 
     LiveWsOutMsg binMsg;
-    if (xQueueReceive(gLiveWsBinQueue, &binMsg, 0) == pdTRUE) {
-      dispatchLiveWsMsg(binMsg);
+    if (ch.binQueue && xQueueReceive(ch.binQueue, &binMsg, 0) == pdTRUE) {
+      dispatchMsgOnChannel(ch, binMsg);
       free(binMsg.data);
     }
 
-    gWsCurrentStep = "idle";
+    ch.currentStep = "idle";
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
@@ -263,7 +237,8 @@ static void liveWsTaskFn(void*) {
 // клиента — одиночные кнопки (left/right/enter/mute/power/set), см. executeWebAction() и
 // cmd() в PAGE_HTML. Тело — ниже, после executeWebAction() (иначе пришлось бы либо объявлять
 // её заранее, либо переносить весь этот файл целиком — так проще)
-static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
+static void handleLiveWsEvent(LiveWsChannel& ch, uint8_t num, WStype_t type, uint8_t* payload,
+                               size_t length);
 
 // Последняя команда, отправленная на Mega. До 2026-09-21 было единственное, что ESP32 вообще
 // "знал" о состоянии системы (Mega ничего не отправляла назад) — теперь webPoweredOff ниже
@@ -2780,48 +2755,53 @@ static void handleCmd() {
 // живое нажатие кнопки человеком, секунды между событиями), а сами MegaSerial-записи уже
 // защищены megaMutex (mega_link.cpp) независимо от потока-вызывающего — тот же принцип, что уже
 // применяется к arylicPollTask (тоже пишет в MegaSerial со своего потока)
-static void handleLiveWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+static void handleLiveWsEvent(LiveWsChannel& ch, uint8_t num, WStype_t type, uint8_t* payload,
+                               size_t length) {
   // Диагностика (2026-10-21) — до сих пор НИЧЕГО не печаталось о CONNECTED/DISCONNECTED на
   // этом сокете: весь разбор "кноб то рвётся, то нет" до сих пор шёл только по логу самого
   // кноба (который видит лишь факт обрыва, не причину на этой стороне). Теперь здесь видно,
   // какой из уже существующих триггеров реально срабатывает — наш kSlowStreakKick (у него уже
   // есть свой printf выше, в liveWsTaskFn) печатает ДО этого disconnect-события, либо
   // disconnect приходит БЕЗ такого printf — тогда это либо enableHeartbeat() (сама библиотека
-  // отключает молча), либо настоящий обрыв TCP со стороны кноба.
+  // отключает молча), либо настоящий обрыв TCP со стороны клиента. ch.logTag отличает в логе
+  // веб-канал от кноб-канала (2026-10-24, после разделения портов — см. LiveWsChannel выше).
   if (type == WStype_CONNECTED) {
-    Serial.printf("[web] live WS client #%u connected\n", num);
+    Serial.printf("[%s] live WS client #%u connected\n", ch.logTag, num);
     // Найдено живьём (2026-10-21, по идее пользователя): раньше по умолчанию было true (веб-
     // страница ведь показывает зеркало) — значит кадры лились НЕПРЕРЫВНО с Меги в сторону
     // любой просто открытой вкладки, даже если человек на зеркало прямо сейчас не смотрит (а
-    // именно это и забивало общий канал, см. gLiveWsBinQueue выше). Теперь по умолчанию
-    // ВЫКЛЮЧЕНО у всех без исключения — включается только явно, кнопкой на странице
-    // (PAGE_HTML, toggleMirror()), шлёт "mirror:on"/"mirror:off" по этому же сокету. Сброс на
-    // false при каждом новом коннекте — так новая вкладка/клиент не наследует состояние от
-    // того, кто раньше занимал этот слот.
-    gClientWantsBinary[num] = false;
+    // именно это и забивало общий канал). Теперь по умолчанию ВЫКЛЮЧЕНО у всех без исключения —
+    // включается только явно, кнопкой на странице (PAGE_HTML, toggleMirror()), шлёт
+    // "mirror:on"/"mirror:off" по этому же сокету. Сброс на false при каждом новом коннекте —
+    // так новая вкладка/клиент не наследует состояние от того, кто раньше занимал этот слот.
+    ch.clientWantsBinary[num] = false;
     return;
   }
   if (type == WStype_DISCONNECTED) {
-    Serial.printf("[web] live WS client #%u disconnected\n", num);
-    gClientWantsBinary[num] = false; // keep anyClientWantsBinary() accurate, see its own comment
+    Serial.printf("[%s] live WS client #%u disconnected\n", ch.logTag, num);
+    ch.clientWantsBinary[num] = false; // keep anyClientWantsBinary() accurate, see its comment
     return;
   }
   if (type != WStype_TEXT) {
     return;
   }
-  // "mirror:on"/"mirror:off" — см. gClientWantsBinary выше. Не под префиксом "cmd:" (разбирается
+  // "mirror:on"/"mirror:off" — см. clientWantsBinary выше. Не под префиксом "cmd:" (разбирается
   // ДО него — простой отдельный протокольный сигнал, не команда кнопки). "off" шлёт кноб один
   // раз сразу после коннекта (esp32_link.cpp, там же, где уже шлётся "cmd:exit") — больше не
-  // обязательно раз default и так false, но оставлено как явная защита намерения. "on" шлёт
-  // веб-страница по нажатию кнопки (toggleMirror()), "off" — повторно по снятию галочки.
+  // обязательно раз default и так false, но оставлено как явная защита намерения (кноб-канал
+  // вообще не создаёт binQueue, см. webControlBegin() ниже, так что это здесь безвредный no-op
+  // для него). "on" шлёт веб-страница по нажатию кнопки (toggleMirror()), "off" — повторно по
+  // снятию галочки.
   if (length == 9 && memcmp(payload, "mirror:on", 9) == 0) {
-    gClientWantsBinary[num] = true;
-    Serial.printf("[web] live WS client #%u opted into the OLED mirror (mirror:on)\n", num);
+    ch.clientWantsBinary[num] = true;
+    Serial.printf("[%s] live WS client #%u opted into the OLED mirror (mirror:on)\n", ch.logTag,
+                  num);
     return;
   }
   if (length == 10 && memcmp(payload, "mirror:off", 10) == 0) {
-    gClientWantsBinary[num] = false;
-    Serial.printf("[web] live WS client #%u opted out of the OLED mirror (mirror:off)\n", num);
+    ch.clientWantsBinary[num] = false;
+    Serial.printf("[%s] live WS client #%u opted out of the OLED mirror (mirror:off)\n", ch.logTag,
+                  num);
     return;
   }
   // "cmd:" — префикс, отличающий одиночную команду кнопки от прочего (сейчас это единственное,
@@ -3111,15 +3091,15 @@ static void handleWifiCreds() {
   server.send(200, "application/json", json);
 }
 
-// Рассылает всем открытым соединениям на LIVE_WS_PORT то же самое, что уже отдают
-// /status, /track, /arylic-status по отдельности — раз в LIVE_WS_PUSH_INTERVAL_MS, независимо
-// от того, изменилось ли что-то (та же простая периодика, что была у HTTP-опроса, просто без
-// TCP-хендшейка на каждый раз). "type" отличает три сообщения друг от друга на клиенте
-// (см. connectLiveWs() в PAGE_HTML) — сами JSON/текст идентичны тому, что вернул бы
+// Рассылает всем открытым соединениям (оба канала — см. LiveWsChannel выше) то же самое, что
+// уже отдают /status, /track, /arylic-status по отдельности — раз в LIVE_WS_PUSH_INTERVAL_MS,
+// независимо от того, изменилось ли что-то (та же простая периодика, что была у HTTP-опроса,
+// просто без TCP-хендшейка на каждый раз). "type" отличает три сообщения друг от друга на
+// клиенте (см. connectLiveWs() в PAGE_HTML) — сами JSON/текст идентичны тому, что вернул бы
 // соответствующий HTTP-эндпоинт
 static void liveWsBroadcastPoll() {
   static unsigned long lastBroadcast = 0;
-  if (liveWsServer.connectedClients() == 0) {
+  if (liveWsServer.connectedClients() == 0 && knobWsServer.connectedClients() == 0) {
     return; // никто не слушает — нечего считать/слать
   }
   if (millis() - lastBroadcast < LIVE_WS_PUSH_INTERVAL_MS) {
@@ -3129,15 +3109,16 @@ static void liveWsBroadcastPoll() {
   String status = "{\"type\":\"status\",\"data\":" + buildStatusJson() + "}";
   String track = "{\"type\":\"track\",\"data\":" + buildTrackJson() + "}";
   String arylic = "{\"type\":\"arylic\",\"text\":\"" + jsonEscape(buildArylicStatusText()) + "\"}";
-  enqueueLiveWs(false, (const uint8_t*)status.c_str(), status.length());
-  enqueueLiveWs(false, (const uint8_t*)track.c_str(), track.length());
-  enqueueLiveWs(false, (const uint8_t*)arylic.c_str(), arylic.length());
+  enqueueLiveWsText((const uint8_t*)status.c_str(), status.length());
+  enqueueLiveWsText((const uint8_t*)track.c_str(), track.length());
+  enqueueLiveWsText((const uint8_t*)arylic.c_str(), arylic.length());
 }
 
-// Сырой бинарный WS-фрейм, не JSON: клиент отличает его от текстовых push-сообщений выше по типу (ArrayBuffer vs
-// строка, см. connectLiveWs() в PAGE_HTML), поэтому обёртка не нужна вообще
+// Сырой бинарный WS-фрейм, не JSON: клиент отличает его от текстовых push-сообщений выше по
+// типу (ArrayBuffer vs строка, см. connectLiveWs() в PAGE_HTML), поэтому обёртка не нужна
+// вообще. Только веб-канал — кноб-канал зеркало не поддерживает (см. LiveWsChannel выше).
 void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
-  enqueueLiveWs(true, buf, len);
+  enqueueOnChannel(gWebChannel, true, buf, len);
 }
 
 // KnobControl Фаза 4 (см. web_control.h) — тот же jsonEscape(), что уже используется для
@@ -3145,7 +3126,7 @@ void webControlBroadcastFrame(const uint8_t* buf, size_t len) {
 // гарантированно без кавычек/спецсимволов
 void webControlBroadcastText(const char* type, const char* text) {
   String msg = "{\"type\":\"" + String(type) + "\",\"text\":\"" + jsonEscape(String(text)) + "\"}";
-  enqueueLiveWs(false, (const uint8_t*)msg.c_str(), msg.length());
+  enqueueLiveWsText((const uint8_t*)msg.c_str(), msg.length());
 }
 
 // Найдено живьём (2026-10-21, Playwright-сессия): `server.handleClient()` (WebServer.h,
@@ -3165,8 +3146,8 @@ void webControlBroadcastText(const char* type, const char* text) {
 // HTTP-обработчиком /cmd на этом новом потоке, и это уже было принято как безопасное — см.
 // комментарий у handleLiveWsEvent — запись на Mega защищена megaMutex независимо от потока).
 // liveWsBroadcastPoll() сознательно ОСТАВЛЕНА в webControlPoll() на main loop() — она не
-// трогает `server` вообще, только enqueueLiveWs() (уже потокобезопасна через очередь), так что
-// выносить её незачем, а не выносить — меньше изменений.
+// трогает ни один `server` вообще, только enqueueLiveWsText()/enqueueOnChannel() (уже
+// потокобезопасны через очередь), так что выносить её незачем, а не выносить — меньше изменений.
 static void webControlTaskFn(void*) {
   for (;;) {
     server.handleClient();
@@ -3190,7 +3171,17 @@ void webControlBegin() {
   server.onNotFound(handleNotFound);
   server.begin();
   liveWsServer.begin();
-  liveWsServer.onEvent(handleLiveWsEvent);
+  knobWsServer.begin();
+  liveWsServer.onEvent([](uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+    handleLiveWsEvent(gWebChannel, num, type, payload, length);
+  });
+  // Отдельный WS-сервер/порт только для кноба (2026-10-24, KNOB_WS_PORT — см. его же
+  // комментарий в config.h и у LiveWsChannel выше за тем, почему это больше не один сокет
+  // с веб-страницей): тот же обработчик, с собственным каналом вместо gWebChannel — числа
+  // "num" (слоты клиентов) у каждого сервера свои, не пересекаются с веб-каналом.
+  knobWsServer.onEvent([](uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+    handleLiveWsEvent(gKnobChannel, num, type, payload, length);
+  });
   // Найдено живьём (2026-10-20) — см. motor_ws.cpp's motorWsBegin() за полным объяснением.
   // Этот сервер особенно уязвим: он САМ broadcastTXT()/broadcastBIN() каждые ~500мс и на
   // каждый зеркалируемый кадр OLED с Меги (liveWsBroadcastPoll()/webControlBroadcastFrame()
@@ -3221,9 +3212,14 @@ void webControlBegin() {
   // что write()-детектор реально ловит ту же категорию "подключен, но мёртв" клиентов — судя по
   // живому тесту, не ловит.
   liveWsServer.enableHeartbeat(15000, 5000, 4);
+  knobWsServer.enableHeartbeat(15000, 5000, 4);
 
-  gLiveWsTextQueue = xQueueCreate(kLiveWsTextQueueLen, sizeof(LiveWsOutMsg));
-  gLiveWsBinQueue = xQueueCreate(kLiveWsBinQueueLen, sizeof(LiveWsOutMsg));
+  gWebChannel.textQueue = xQueueCreate(kLiveWsTextQueueLen, sizeof(LiveWsOutMsg));
+  gWebChannel.binQueue = xQueueCreate(kLiveWsBinQueueLen, sizeof(LiveWsOutMsg));
+  gKnobChannel.textQueue = xQueueCreate(kLiveWsTextQueueLen, sizeof(LiveWsOutMsg));
+  // gKnobChannel.binQueue остаётся nullptr — кноб-канал не поддерживает OLED-зеркало вообще
+  // (см. LiveWsChannel/enqueueOnChannel выше), выделять под него очередь незачем.
+
   // Core 0 — тот же, что уже использует arylicPollTask (arylic_metadata.cpp) под аналогичные
   // фоновые сетевые задачи; loop() (UART к Меге) остаётся на core 1 (ARDUINO_RUNNING_CORE), сам
   // HTTP-сервер теперь тоже на core 0 — см. webControlTaskFn ниже
@@ -3238,9 +3234,15 @@ void webControlBegin() {
   // watchpoint triggered (live_ws)"), роняя весь чип ИМЕННО в момент получения команды питания
   // во время воспроизведения (при остановленном треке arylicSendPlayerCommand() не звалась
   // вообще — arylicTrackIsPlaying()-гейт в applyWebPowerState() — поэтому баг был незаметен
-  // в режиме "не играет").
-  xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 12288, nullptr, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, nullptr, 1, nullptr, 0);
+  // в режиме "не играет"). Кноб-канал (knob_ws, 2026-10-24) получает тот же стек по той же
+  // причине — кноб шлёт "cmd:power" через Quick Actions ровно так же, как веб-страница, и этот
+  // же путь к TLS-вызову выполняется теперь на ЕГО собственной задаче.
+  xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 12288, &gWebChannel, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(liveWsTaskFn, "knob_ws", 12288, &gKnobChannel, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, &gWebChannel, 1, nullptr,
+                           0);
+  xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "knob_ws_watchdog", 2048, &gKnobChannel, 1, nullptr,
+                           0);
   xTaskCreatePinnedToCore(webControlTaskFn, "web_http", 8192, nullptr, 1, nullptr, 0);
 
   Serial.print("[web] веб-морда поднята, зайди на http://");
