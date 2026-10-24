@@ -52,6 +52,22 @@ constexpr unsigned long kSlowClientKickMs = 1500;
 // достаточно быстрой отправке.
 constexpr uint8_t kSlowStreakKick = 3;
 
+// Найдено живьём (2026-10-25): даже с kSlowStreakKick=3 отдельные эпизоды растягивались до
+// ~30с (3×~10с) прежде чем клиента наконец кикали — потому что КАЖДАЯ отдельная "медленная"
+// попытка сама по себе может занять до ~10 секунд. Причина — ограничение НИЖЕ уровня
+// WebSockets/WEBSOCKETS_TCP_TIMEOUT (тот честно настроен и работает, но не про это):
+// Arduino-ESP32 core's WiFiClient::write() (framework-arduinoespressif32/libraries/WiFi/src/
+// WiFiClient.cpp) делает неблокирующий send() через select() с ЗАШИТЫМИ в саму библиотеку
+// константами — WIFI_CLIENT_MAX_WRITE_RETRY=10 попыток по WIFI_CLIENT_SELECT_TIMEOUT_US=1с
+// каждая — то есть ОДИН вызов write() может блокироваться до 10 секунд НЕЗАВИСИМО от
+// setTimeout()/WEBSOCKETS_TCP_TIMEOUT, которые эту конкретную функцию вообще не используют.
+// Это не вызов, который можно переопределить макросом — захардкожено в самой библиотеке.
+// Раз нельзя сократить длительность ОДНОЙ такой попытки, сокращаем вместо этого, сколько раз
+// подряд мы готовы её терпеть: один-единственный эпизод такой длины (явно отличимый от обычной
+// ретрансмиссионной заминки 1.5-2.5с, см. kSlowStreakKick выше) — это уже достаточное
+// доказательство, что клиент завис намертво, а не просто "плохой сигнал сейчас".
+constexpr unsigned long kHardStallKickMs = 5000;
+
 // Найдено живьём (2026-10-24, через жалобу "кручу кноб после простоя — не отвечает 5-6 секунд"
 // и живой лог компаньона, где клиент веб-страницы в браузере — "client #0" — несколько раз
 // подряд подвисал в sendTXT() на 2-10 секунд): кноб и веб-страница раньше сидели на ОДНОМ
@@ -184,7 +200,14 @@ static void dispatchMsgOnChannel(LiveWsChannel& ch, const LiveWsOutMsg& msg) {
     bool ok = msg.binary ? ch.server.sendBIN(num, msg.data, msg.len)
                           : ch.server.sendTXT(num, (const char*)msg.data, msg.len);
     unsigned long elapsed = millis() - ch.stepStartMs;
-    if (elapsed > kSlowClientKickMs) {
+    if (elapsed > kHardStallKickMs) {
+      // See kHardStallKickMs's own comment — a single WiFiClient::write() call hitting its
+      // hardcoded ~10s internal retry ceiling is proof enough on its own, don't wait for 3.
+      Serial.printf("[%s] live WS client #%u hard-stalled (%lums%s) — kicking immediately\n",
+                    ch.logTag, num, elapsed, ok ? "" : ", send failed");
+      ch.server.disconnect(num);
+      ch.slowStreak[num] = 0;
+    } else if (elapsed > kSlowClientKickMs) {
       ch.slowStreak[num]++;
       if (ch.slowStreak[num] >= kSlowStreakKick) {
         Serial.printf("[%s] live WS client #%u slow %u times in a row (latest %lums%s) — "
