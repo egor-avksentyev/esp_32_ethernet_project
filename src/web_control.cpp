@@ -203,21 +203,31 @@ static void dispatchMsgOnChannel(LiveWsChannel& ch, const LiveWsOutMsg& msg) {
     if (elapsed > kHardStallKickMs) {
       // See kHardStallKickMs's own comment — a single WiFiClient::write() call hitting its
       // hardcoded ~10s internal retry ceiling is proof enough on its own, don't wait for 3.
-      Serial.printf("[%s] live WS client #%u hard-stalled (%lums%s) — kicking immediately\n",
-                    ch.logTag, num, elapsed, ok ? "" : ", send failed");
+      //
+      // RSSI added (2026-10-25, user's own suggestion — "давай добавим" after asking whether to
+      // investigate the physical signal next) — this is the COMPANION's own link to the router,
+      // not the knob's (the companion has no way to read the knob's RSSI from here). If this
+      // reads weak every time a stall happens, the companion's own uplink is a real contributor
+      // alongside (or instead of) the knob's already-documented weak spot — if it stays strong
+      // every time, that rules the companion side out and points more squarely at the knob.
+      Serial.printf("[%s] live WS client #%u hard-stalled (%lums%s) — kicking immediately, "
+                    "own rssi=%ddBm\n",
+                    ch.logTag, num, elapsed, ok ? "" : ", send failed", (int)WiFi.RSSI());
       ch.server.disconnect(num);
       ch.slowStreak[num] = 0;
     } else if (elapsed > kSlowClientKickMs) {
       ch.slowStreak[num]++;
       if (ch.slowStreak[num] >= kSlowStreakKick) {
         Serial.printf("[%s] live WS client #%u slow %u times in a row (latest %lums%s) — "
-                      "kicking\n",
-                      ch.logTag, num, ch.slowStreak[num], elapsed, ok ? "" : ", send failed");
+                      "kicking, own rssi=%ddBm\n",
+                      ch.logTag, num, ch.slowStreak[num], elapsed, ok ? "" : ", send failed",
+                      (int)WiFi.RSSI());
         ch.server.disconnect(num);
         ch.slowStreak[num] = 0;
       } else {
-        Serial.printf("[%s] live WS client #%u slow (%lums%s, streak %u/%u)\n", ch.logTag, num,
-                      elapsed, ok ? "" : ", send failed", ch.slowStreak[num], kSlowStreakKick);
+        Serial.printf("[%s] live WS client #%u slow (%lums%s, streak %u/%u), own rssi=%ddBm\n",
+                      ch.logTag, num, elapsed, ok ? "" : ", send failed", ch.slowStreak[num],
+                      kSlowStreakKick, (int)WiFi.RSSI());
       }
     } else {
       ch.slowStreak[num] = 0;
