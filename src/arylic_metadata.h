@@ -133,6 +133,23 @@ bool arylicSeek(long posMs);
 // Arylic для AirPlay, а не баг данной функции
 void arylicNotifyOnepausePressed();
 
+// Найдено живьём (2026-10-25): applyWebPowerState() (web_control.cpp) раньше звала
+// arylicSendPlayerCommand("onepause") ПРЯМО ИЗ ТОГО ПОТОКА, который её вызвал — а это может
+// быть liveWsTaskFn (входящий WS "cmd:power" от кноба/браузера, см. handleLiveWsEvent()) или
+// main loop() (настоящий POWER: по UART от Меги, см. mega_link.cpp). sendArylicCommand()'s
+// TLS-хендшейк может занимать вплоть до ~10с (8с таймаут хендшейка + 2с HTTP, см. её же
+// комментарий) — блокируя liveWsTaskFn на это время, замораживает ВЕСЬ WS (heartbeat/приём/
+// рассылку всем клиентам, включая кноб) целиком. Подтверждено живым логом как настоящая причина
+// "кноб будит Мегу из Standby не с первого раза, а со 2-3": CMD:P уходил нормально, но
+// последующий onepause-вызов (резюм трека) съедал WS-соединение на время TLS-таймаута, и сама
+// команда/её подтверждение терялись в этом окне.
+//
+// Эта функция только СТАВИТ флаг — реальный вызов arylicSendPlayerCommand("onepause") происходит
+// внутри arylicPollTask (её собственный цикл, arylic_metadata.cpp), никогда на потоке
+// вызывающего. pausedByPowerOff (web_control.cpp) выставляется ОПТИМИСТИЧНО, ДО реального
+// подтверждения успеха — тот же принцип, что уже применён к webPoweredOff в этом же файле.
+void arylicRequestOnepauseAsync();
+
 // Заводской сброс Arylic (web_control.cpp, POST /factory-reset — кнопка "Заводской сброс" на
 // веб-странице, заменила прежнюю "Сменить Wi-Fi"). Ищет устройство СВЕЖИМ mDNS-запросом, не
 // кэшированным IP и не статическим фолбэком из config.h — вся система (Mega/ESP32/Arylic)

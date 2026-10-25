@@ -401,10 +401,14 @@ void applyWebPowerState(bool off) {
     // так что при уже стоящей паузе эта же команда включила бы воспроизведение обратно
     pausedByPowerOff = false;
     if (arylicTrackIsPlaying()) {
-      if (arylicSendPlayerCommand("onepause")) {
-        arylicNotifyOnepausePressed();
-        pausedByPowerOff = true;
-      }
+      // Найдено живьём (2026-10-25): раньше звали arylicSendPlayerCommand("onepause") прямо
+      // тут, инлайново — а эта функция достижима с liveWsTaskFn (входящий WS "cmd:power" от
+      // кноба), и блокирующий TLS-вызов (до ~10с) замораживал ВЕСЬ WS на это время. Подробный
+      // разбор и то, почему это и была настоящая причина "кноб не будит Мегу из Standby с
+      // первого раза" — см. arylicRequestOnepauseAsync() в arylic_metadata.h. pausedByPowerOff
+      // ставится оптимистично, до подтверждения — тот же приём, что уже у webPoweredOff выше.
+      pausedByPowerOff = true;
+      arylicRequestOnepauseAsync();
     }
   } else if (pausedByPowerOff) {
     // Возобновляем, только если паузу поставили именно мы при выключении (см.
@@ -418,9 +422,7 @@ void applyWebPowerState(bool off) {
     // имеет отдельной команды "только резюм", поэтому единственная защита — не звать её вообще,
     // если и так уже играет
     if (!arylicTrackIsPlaying()) {
-      if (arylicSendPlayerCommand("onepause")) {
-        arylicNotifyOnepausePressed();
-      }
+      arylicRequestOnepauseAsync(); // async — см. комментарий в ветке выше за тем, почему
     }
     pausedByPowerOff = false;
   }

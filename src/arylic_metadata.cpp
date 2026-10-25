@@ -214,8 +214,17 @@ static String arylicUrl() {
 
 // Общий отправитель команд управления (play/pause/next/prev/volume) — один запрос,
 // без ожидания ответа с данными (Arylic отвечает просто "OK"). Вызывается по действию
-// пользователя на веб-странице (handlePlayback()/handleVolume() в web_control.cpp), не по
-// таймеру опроса, всегда из основного loop()-потока — static здесь безопасен без мьютекса.
+// пользователя на веб-странице (handlePlayback()/handleVolume() в web_control.cpp).
+//
+// УСТАРЕЛО (2026-10-25): комментарий раньше утверждал "всегда из основного loop()-потока —
+// static здесь безопасен без мьютекса" — это давно не так: handlePlayback()/handleVolume()
+// живут на webControlTaskFn, а "power"-путь (applyWebPowerState()) — на arylicPollTask (см.
+// arylicRequestOnepauseAsync() выше в этом файле/в .h), то есть два РАЗНЫХ потока могут
+// дёрнуть этот static `client` не строго по очереди. На практике это редкое по времени
+// совпадение (клик play/pause ровно в момент включения/выключения питания), не разобрано
+// мьютексом — известный, но пока не воспроизведённый живьём риск, не трогать мимоходом,
+// разбираться отдельно если даст о себе знать (см. memory project_companion_ws_nonblocking_send_fix
+// за похожим классом проблемы, решённым для другого пути)
 // Лог connected()-до-запроса — чтобы по факту (не гадая) увидеть, реально ли Arylic держит
 // соединение живым между кликами, или каждый раз всё равно платим за хендшейк заново
 static bool sendArylicCommand(const String& command) {
@@ -904,6 +913,23 @@ static void pollArylicMetadataOnce() {
   Serial.println(combined);
 }
 
+// См. arylicRequestOnepauseAsync() (arylic_metadata.h) за полным разбором — applyWebPowerState()
+// (web_control.cpp) раньше звала arylicSendPlayerCommand("onepause") прямо с потока вызывающего
+// (liveWsTaskFn для WS "cmd:power", main loop() для настоящего POWER: по UART), замораживая его
+// на время TLS-таймаута (вплоть до ~10с). Теперь только ставит флаг здесь — реальный вызов
+// происходит ниже, внутри arylicPollTask, никогда на чужом потоке.
+static volatile bool gPendingOnepauseRequest = false;
+
+void arylicRequestOnepauseAsync() { gPendingOnepauseRequest = true; }
+
+static void serviceAsyncOnepauseRequest() {
+  if (!gPendingOnepauseRequest) return;
+  gPendingOnepauseRequest = false;
+  if (arylicSendPlayerCommand("onepause")) {
+    arylicNotifyOnepausePressed();
+  }
+}
+
 // Фоновая задача — крутится на ядре 0 (вместе со стеком Wi-Fi/lwIP, обычная практика для
 // сетевых задач на ESP32), пока loop() с веб-сервером остаётся на ядре 1 и ничем не блокируется
 // этим опросом. Пауза ARYLIC_POLL_INTERVAL_MS — ПОСЛЕ каждой попытки, а не по жёсткому
@@ -919,6 +945,7 @@ static void pollArylicMetadataOnce() {
 static void arylicPollTask(void* /*param*/) {
   uint32_t iteration = 0;
   for (;;) {
+    serviceAsyncOnepauseRequest();
     if (wifiIsConnected()) {
       pollArylicMetadataOnce();
     }
