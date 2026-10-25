@@ -8,17 +8,106 @@
 #include <WiFi.h>
 #include <WebSocketsServer.h>
 #include <string.h>
+#include <errno.h>
+#include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
 static WebServer server(WEB_SERVER_PORT);
 
+// Найдено живьём (2026-10-25): под ~12.5 сообщений/сек суммарного живого трафика (MENU:(5/с) +
+// status/track/arylic(6/с) + SETTINGS:/MUTE:/STREAMER:(1.5/с)) один-единственный sendTXT()/
+// sendBIN() к временно затормозившему клиенту может заблокировать ВСЮ задачу рассылки (а с ней
+// и liveWsServer.loop(), то есть приём cmd: от всех клиентов) на вплоть до ~10с — жёсткий,
+// незадаваемый потолок самого WiFiClient::write() (см. project_wificlient_write_10s_hard_ceiling
+// в памяти). Три таких подряд (существующий допуск kSlowStreakKick=3 ниже) — до ~30с простоя
+// ВСЕЙ рассылки разом из-за одного клиента, подтверждено живьём ("[ws-watchdog] STUCK in
+// 'sendTXT' for ...ms" + у кноба в этот же момент чистый "WS disconnected" при полностью
+// здоровом RSSI). WEBSOCKETS_TCP_TIMEOUT тут не помогает — он ограничивает паузу МЕЖДУ успешными
+// частичными записями ВНУТРИ WebSockets::write(), а не единственный уже заблокировавшийся вызов
+// WiFiClient::write() целиком (см. её собственный разбор в памяти).
+//
+// Раз сам write() неисправим (не наш код, нет макроса), подменяем сам путь отправки: достаём
+// сырой fd клиента (WiFiClient::fd(), публичный метод) и шлём кадр вручную через неблокирующий
+// ::send(..., MSG_DONTWAIT) в собственном цикле с ЯВНОЙ границей по времени (budgetMs) —
+// худший случай одного вызова становится не ~10000мс, а budgetMs (ниже передаётся
+// kSlowClientKickMs). Существующий допуск gSlowStreak/kSlowStreakKick ("три раза подряд — повод")
+// остаётся как есть, просто каждая попытка теперь на порядок дешевле.
+class LiveWsServerNB : public WebSocketsServer {
+  public:
+    using WebSocketsServer::WebSocketsServer;
+
+    // Собирает и шлёт ОДИН немаскированный, нефрагментированный WS-кадр (сервер->клиент по
+    // RFC 6455 никогда не маскирует) напрямую в сырой сокет клиента, в обход
+    // WebSockets::write()/WiFiClient::write() целиком. false — клиент не подключён, реальная
+    // ошибка сокета, или budgetMs истёк раньше, чем кадр ушёл целиком; вызывающая сторона уже
+    // одинаково реагирует на false/долгий elapsed (см. dispatchLiveWsMsg() ниже).
+    bool sendFrameNonBlocking(uint8_t num, bool binary, const uint8_t *payload, size_t len,
+                              unsigned long budgetMs) {
+        if (num >= WEBSOCKETS_SERVER_CLIENT_MAX) return false;
+        WSclient_t &client = _clients[num];
+        if (client.status != WSC_CONNECTED || !client.tcp || !client.tcp->connected()) {
+            return false;
+        }
+        int fd = client.tcp->fd();
+        if (fd < 0) return false;
+
+        // Только формы заголовка <126 и 126..65535 — любое сообщение на этом сервере
+        // (MENU:/SETTINGS:/status/track/arylic текстом, 1026-байтные кадры зеркала) далеко
+        // меньше 64КБ, форма с 8-байтной длиной (127) намеренно не реализована.
+        if (len >= 0xFFFF) return false;
+        uint8_t header[4];
+        uint8_t headerLen;
+        header[0] = 0x80 | (binary ? 0x02 : 0x01);    // FIN=1, opcode text/binary
+        if (len < 126) {
+            header[1] = (uint8_t)len;
+            headerLen = 2;
+        } else {
+            header[1] = 126;
+            header[2] = (uint8_t)((len >> 8) & 0xFF);
+            header[3] = (uint8_t)(len & 0xFF);
+            headerLen = 4;
+        }
+
+        size_t totalLen = (size_t)headerLen + len;
+        uint8_t *buf = (uint8_t *)malloc(totalLen);
+        if (!buf) return false;
+        memcpy(buf, header, headerLen);
+        memcpy(buf + headerLen, payload, len);
+
+        size_t sentTotal = 0;
+        unsigned long start = millis();
+        bool ok = true;
+        while (sentTotal < totalLen) {
+            if (millis() - start >= budgetMs) {
+                ok = false;    // не наша вина клиента — просто больше не ждём
+                break;
+            }
+            if (!client.tcp->connected()) {
+                ok = false;
+                break;
+            }
+            ssize_t n = ::send(fd, buf + sentTotal, totalLen - sentTotal, MSG_DONTWAIT);
+            if (n > 0) {
+                sentTotal += (size_t)n;
+            } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+                vTaskDelay(pdMS_TO_TICKS(5));    // буфер отправки полон — короткая пауза, не блокировка
+            } else {
+                ok = false;    // настоящая ошибка сокета (ECONNRESET/EPIPE/...) — дальше ждать бессмысленно
+                break;
+            }
+        }
+        free(buf);
+        return ok && sentTotal == totalLen;
+    }
+};
+
 // Постоянный push статуса/трека/Arylic на веб-страницу — см. LIVE_WS_PORT (config.h) за
 // объяснением зачем, и liveWsBroadcastPoll() ниже за самой рассылкой. Один клиент ожидается
 // на практике (одна открытая вкладка), но WebSocketsServer сам поддерживает несколько —
 // рассылка широковещательная, лишнего кода под общий случай не потребовалось
-static WebSocketsServer liveWsServer(LIVE_WS_PORT);
+static LiveWsServerNB liveWsServer(LIVE_WS_PORT);
 
 // Найдено живьём (2026-10-20): WEBSOCKETS_TCP_TIMEOUT (platformio.ini, 800мс) ограничивает
 // только ПАУЗУ МЕЖДУ успешными частичными записями внутри WebSockets::write() — не суммарное
@@ -174,10 +263,16 @@ static void liveWsCanaryTaskFn(void*) {
 // (библиотека не даёт прервать его на середине), единственный способ ограничить урон — не
 // позволять ОДНОМУ и тому же клиенту тормозить КАЖДЫЙ следующий цикл рассылки. Переходим с
 // broadcastTXT/broadcastBIN (один вызов на всех клиентов разом) на ручной обход по каждому
-// клиенту (sendTXT/sendBIN, WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) с
-// замером времени — см. gSlowStreak ниже за тем, что именно считается "клиент безнадёжен".
-// Безопасно звать disconnect() отсюда же — это единственный поток, который вообще трогает
-// liveWsServer после setup()
+// клиенту (WEBSOCKETS_SERVER_CLIENT_MAX — публичный макрос библиотеки) с замером времени — см.
+// gSlowStreak ниже за тем, что именно считается "клиент безнадёжен". Безопасно звать
+// disconnect() отсюда же — это единственный поток, который вообще трогает liveWsServer после
+// setup().
+//
+// 2026-10-25: сам per-client write() всё ещё мог застревать на ~10с (жёсткий потолок
+// WiFiClient::write(), не лечится этим таймером) — см. LiveWsServerNB/sendFrameNonBlocking()
+// выше за тем, как это обойдено. kSlowClientKickMs теперь двойную роль: и порог "считать ли
+// эту попытку медленной" НИЖЕ, и САМ БЮДЖЕТ на попытку внутри sendFrameNonBlocking() — то есть
+// одна попытка физически не может занять больше этого времени.
 constexpr unsigned long kSlowClientKickMs = 1500;
 
 // Найдено живьём (2026-10-21, кноб): кикать клиента по ОДНОЙ медленной отправке — перебор на
@@ -206,8 +301,8 @@ static void dispatchLiveWsMsg(const LiveWsOutMsg& msg) {
     }
     gWsCurrentStep = msg.binary ? "sendBIN" : "sendTXT";
     gWsStepStartMs = millis();
-    bool ok = msg.binary ? liveWsServer.sendBIN(num, msg.data, msg.len)
-                          : liveWsServer.sendTXT(num, (const char*)msg.data, msg.len);
+    bool ok = liveWsServer.sendFrameNonBlocking(num, msg.binary, msg.data, msg.len,
+                                                 kSlowClientKickMs);
     unsigned long elapsed = millis() - gWsStepStartMs;
     if (elapsed > kSlowClientKickMs) {
       gSlowStreak[num]++;
