@@ -6,9 +6,12 @@
 #include "weather.h"
 #include <WebServer.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 #include <WebSocketsServer.h>
 #include <string.h>
 #include <errno.h>
+#include <esp_heap_caps.h>
 #include <lwip/sockets.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -3096,6 +3099,113 @@ static void handleWeather() {
   server.send(200, "application/json", buildWeatherJson());
 }
 
+// Image proxy for KnobControl's cover_art.cpp — the knob doesn't keep a WiFiClientSecure/
+// HTTPClient of its own for external hosts (mbedTLS needs one large CONTIGUOUS internal-RAM
+// block for the handshake, which that LVGL-heavy board doesn't reliably have free — confirmed
+// live, "SSL - Memory allocation failed"). This board already does its own frequent HTTPS calls
+// to Arylic (arylic_metadata.cpp) and has real headroom for it (asymmetric mbedTLS buffers, see
+// platformio.ini) — the knob just does a plain HTTP GET here instead, no TLS of its own for this.
+//
+// Fully buffered (2026-10-30, direct user request) — was streamed straight through as bytes
+// arrived from upstream. Found live: real transfers sometimes cut off mid-stream (one logged
+// case got 15036 of 61028 bytes) — since the HTTP response headers (incl. Content-Length) had
+// already gone out to the knob by the time that happened, the knob was left holding a "200 OK"
+// that was actually truncated, with no clean way to tell the two apart. Downloading the whole
+// image into a PSRAM buffer FIRST (this board has 8MB octal PSRAM, see platformio.ini —
+// MALLOC_CAP_SPIRAM keeps this off the internal RAM mbedTLS/Wi-Fi need) means an upstream hiccup
+// now surfaces as an honest 502 before any response reaches the knob, instead of a silently
+// truncated 200 — and this handler already runs on its own dedicated HTTP task (webControlTaskFn,
+// isolated from the UART/Arylic-polling paths since 2026-10-21), so holding the data a bit longer
+// here doesn't block anything new that a streamed relay wasn't already serializing against.
+constexpr size_t kCoverImageMaxBytes = 400 * 1024; // matches the knob's own cover_art.cpp cap
+
+static void handleCoverImage() {
+  if (!server.hasArg("url")) {
+    server.send(400, "text/plain", "missing url");
+    return;
+  }
+  String url = server.arg("url");
+  bool isHttps = url.startsWith("https://");
+  // Diagnostic (2026-10-29): suspected overlap between this fetch and Arylic's own HTTPS API
+  // when the art URL points back at Arylic itself (self-hosted UPnP art, same device as
+  // getPlayerStatus/setPlayerCmd) — if a "start_ssl_client: -1" storm on the Arylic polling side
+  // lines up in time with one of these lines, that confirms concurrent requests to the SAME
+  // device are the cause, not a companion-side resource problem.
+  Serial.printf("[coverimg] fetch %s at t=%lu\n", url.c_str(), millis());
+
+  WiFiClientSecure secureClient;
+  WiFiClient plainClient;
+  if (isHttps) {
+    secureClient.setInsecure(); // same reasoning as arylic_metadata.cpp — not pinning an
+                                 // arbitrary CDN's cert chain for a cover thumbnail
+    secureClient.setHandshakeTimeout(8);
+  }
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(5000); // REVERTED (2026-10-30) — raising this to 10000 made things worse live
+                          // (more lag, cover art still unreliable), not better; not the real
+                          // cause of the truncated-download symptom, reverted per direct request
+  bool began = isHttps ? http.begin(secureClient, url) : http.begin(plainClient, url);
+  if (!began) {
+    server.send(502, "text/plain", "begin failed");
+    return;
+  }
+
+  int code = http.GET();
+  if (code != HTTP_CODE_OK) {
+    Serial.printf("COVERIMG: upstream GET -> %d\n", code);
+    http.end();
+    server.send(502, "text/plain", "upstream fetch failed");
+    return;
+  }
+
+  int len = http.getSize(); // -1 if chunked/unknown
+  uint8_t *buf = (uint8_t *)heap_caps_malloc(kCoverImageMaxBytes, MALLOC_CAP_SPIRAM);
+  if (!buf) {
+    Serial.println("COVERIMG: failed to allocate PSRAM scratch buffer");
+    http.end();
+    server.send(502, "text/plain", "no memory");
+    return;
+  }
+
+  WiFiClient *stream = http.getStreamPtr();
+  size_t total = 0;
+  unsigned long deadline = millis() + 5000; // REVERTED — see http.setTimeout() comment above
+  while (millis() < deadline) {
+    if (len > 0 && total >= (size_t)len) break;
+    if (total >= kCoverImageMaxBytes) break;
+    size_t avail = stream->available();
+    if (avail == 0) {
+      if (!http.connected()) break;
+      delay(2);
+      continue;
+    }
+    size_t want = kCoverImageMaxBytes - total;
+    size_t toRead = avail < want ? avail : want;
+    int n = stream->readBytes(buf + total, toRead);
+    if (n <= 0) break;
+    total += (size_t)n;
+  }
+  http.end();
+
+  // Only a FULLY received image (matches the declared Content-Length, when one was given) goes
+  // out as a 200 — anything short is an honest 502 instead of a truncated "success", so the knob
+  // can tell the difference and retry rather than trying to decode a broken JPEG.
+  bool complete = total > 0 && (len <= 0 || total == (size_t)len);
+  if (!complete) {
+    Serial.printf("COVERIMG: incomplete download (%u/%d bytes), not relaying\n", (unsigned)total,
+                  len);
+    heap_caps_free(buf);
+    server.send(502, "text/plain", "incomplete download");
+    return;
+  }
+
+  server.setContentLength(total);
+  server.send(200, "image/jpeg", "");
+  server.client().write(buf, total);
+  heap_caps_free(buf);
+}
+
 // Разрешённые действия управления воспроизведением — белый список, чтобы в API Arylic не
 // ушло что попало из query-параметра запроса (см. arylicSendPlayerCommand() —
 // подтверждено live 2026-09-12, что play/pause/next/prev реально доходят и до AirPlay-сессии
@@ -3281,6 +3391,7 @@ void webControlBegin() {
   server.on("/arylic-ip", HTTP_POST, handleArylicIp);
   server.on("/track", handleTrack);
   server.on("/weather", handleWeather);
+  server.on("/cover-image", HTTP_GET, handleCoverImage);
   server.on("/playback", handlePlayback);
   server.on("/volume", handleVolume);
   server.on("/seek", handleSeek);
@@ -3349,7 +3460,12 @@ void webControlBegin() {
   // в режиме "не играет").
   xTaskCreatePinnedToCore(liveWsTaskFn, "live_ws", 12288, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(liveWsCanaryTaskFn, "live_ws_watchdog", 2048, nullptr, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(webControlTaskFn, "web_http", 8192, nullptr, 1, nullptr, 0);
+  // 8192 -> 12288 (2026-10-29): handleCoverImage()'s relay buffer grew 512->4096 bytes to speed
+  // up cover-art transfers — that alone would eat half of the old 8192 stack on top of
+  // WebServer's own request-handling frames + HTTPClient, too close to the margin this codebase
+  // has already hit real stack-overflow crashes at (see e.g. the live_ws TLS stack fix, 6144 ->
+  // 12288 for a comparable HTTPS-call-plus-buffers case).
+  xTaskCreatePinnedToCore(webControlTaskFn, "web_http", 12288, nullptr, 1, nullptr, 0);
 
   Serial.print("[web] веб-морда поднята, зайди на http://");
   Serial.print(WiFi.localIP());
