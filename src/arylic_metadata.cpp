@@ -103,6 +103,20 @@ static char lastSeenMode[8] = "";
 static uint8_t modeChangeStreak = 0;
 #define PLAY_OVERRIDE_INVALIDATE_STREAK 3
 
+// AirPlay-only debounce for "status" blipping to a non-"play" value — found live (2026-11-01):
+// every track switch during AirPlay playback clicked the Mega's Streamer relay open then shut
+// again, because (a) AirPlay's own "status" field can blip to a transient non-"play" value
+// during a normal track transition (the same LinkPlay "load" intermediate state already
+// excused for other sources, see pollArylicMetadataOnce()'s own 2026-09-17 comment) and
+// (b) the curpos-continuity check that excuses it for those OTHER sources explicitly can't help
+// here — curpos never advances for AirPlay at all (project_arylic_airplay_no_metadata memory).
+// A general debounce across ALL sources was tried before and reverted (see
+// pollArylicMetadataOnce()'s own comment on the removed PLAY_STOP_DEBOUNCE_STREAK) because it
+// made Spotify Connect's real pause detection sluggish — scoping this to AirPlay's own mode
+// ("1") only, left untouched for every other source, avoids resurrecting that regression.
+static uint8_t airplayNotPlayingStreak = 0;
+#define AIRPLAY_STOP_DEBOUNCE_STREAK 2
+
 bool arylicTrackIsPlaying() { MutexGuard g(stateMutex); return trackPlaying; }
 String arylicTrackText() { MutexGuard g(stateMutex); return String(trackText); }
 long arylicTrackPosMs() { MutexGuard g(stateMutex); return trackPosMs; }
@@ -781,6 +795,23 @@ static void pollArylicMetadataOnce() {
       }
     }
     overrideActiveNow = playOverrideActive;
+  }
+
+  // AirPlay-only debounce — see airplayNotPlayingStreak's own comment above. Only kicks in when
+  // our own override isn't already deciding `playing` (overrideActiveNow) — a real press of our
+  // play/pause button must always win immediately, no debounce on top of it.
+  bool isAirPlayNow = strcmp(currentMode, "1") == 0;
+  if (isAirPlayNow && !overrideActiveNow) {
+    if (!playing) {
+      airplayNotPlayingStreak++;
+      if (airplayNotPlayingStreak < AIRPLAY_STOP_DEBOUNCE_STREAK) {
+        playing = true; // not yet convinced — could just be the "load" blip during a track switch
+      }
+    } else {
+      airplayNotPlayingStreak = 0;
+    }
+  } else if (!isAirPlayNow) {
+    airplayNotPlayingStreak = 0; // left AirPlay — don't let a stale streak carry over if it returns
   }
 
   // Живой пример 2026-09-17: Spotify Connect (mode 31, оверрайд тут ни при чём) один раз

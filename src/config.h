@@ -136,7 +136,10 @@
 
 // --- Режим настройки Wi-Fi (wifi_provisioning.h/.cpp) — своя открытая точка доступа,
 // поднимается, когда сохранённой сети нет или она недоступна за WIFI_CONNECT_TIMEOUT_MS ---
-#define WIFI_PROVISION_AP_SSID "AudioCtrl-Setup"
+#define WIFI_PROVISION_AP_SSID "Pathfinder" // was "AudioCtrl-Setup" — renamed to match the
+                                             // product's actual branding (direct user request,
+                                             // 2026-11-01); see knob's i18n.cpp for the matching
+                                             // "Connect your phone to..." instructional text
 
 // --- Wi-Fi handoff для KnobControl (ARCHITECTURE.md "Wi-Fi handoff") — служебная точка
 // доступа, поднимается ОДНОВРЕМЕННО с обычным подключением к домашней сети (WIFI_AP_STA, не
